@@ -11,19 +11,15 @@ from app import on_shutdown, on_startup
 from app.core.manager import core_manager
 from app.db import GetDB
 from app.db.crud.node import get_node_by_id, get_nodes
-from app.models.node import NodeCoreUpdate, NodeGeoFilesUpdate
+from app.db.models import NodeStatus
+from app.models.node import NodeCoreUpdate, NodeGeoFilesUpdate, NodeListQuery
 from app.nats.rpc_service import BaseRpcService
 from app.nats.proto_utils import deserialize_proto_message, deserialize_proto_messages
 from app.node import node_manager
 from app.operation import OperatorType
 from app.operation.node import NodeOperation
 from app.utils.logger import get_logger
-from config import (
-    ROLE,
-    NATS_NODE_COMMAND_SUBJECT,
-    NATS_NODE_LOG_SUBJECT,
-    NATS_NODE_RPC_SUBJECT,
-)
+from config import nats_settings, runtime_settings
 
 logger = get_logger("node-worker")
 
@@ -31,9 +27,9 @@ logger = get_logger("node-worker")
 class NodeWorkerService(BaseRpcService):
     def __init__(self):
         super().__init__(
-            subject=NATS_NODE_RPC_SUBJECT,
+            subject=nats_settings.node_rpc_subject,
             logger=logger,
-            role_check=lambda: ROLE.runs_node,
+            role_check=lambda: runtime_settings.role.runs_node,
         )
         self._command_sub: Subscription | None = None
         self._log_tasks: dict[str, asyncio.Task] = {}
@@ -58,6 +54,7 @@ class NodeWorkerService(BaseRpcService):
 
         self.register_rpc_handler("get_node_system_stats", self._get_node_system_stats)
         self.register_rpc_handler("get_nodes_system_stats", self._get_nodes_system_stats)
+        self.register_rpc_handler("get_outbounds_latency", self._get_outbounds_latency)
         self.register_rpc_handler("get_user_online_stats", self._get_user_online_stats_by_node)
         self.register_rpc_handler("get_user_ip_list", self._get_user_ip_list_by_node)
         self.register_rpc_handler("get_user_ip_list_all", self._get_user_ip_list_all_nodes)
@@ -71,11 +68,11 @@ class NodeWorkerService(BaseRpcService):
         if not self._nc:
             return
 
-        self._command_sub = await self._nc.subscribe(NATS_NODE_COMMAND_SUBJECT, cb=self._handle_command)
+        self._command_sub = await self._nc.subscribe(nats_settings.node_command_subject, cb=self._handle_command)
         logger.info("Node worker service started")
 
     async def stop(self):
-        if not ROLE.runs_node:
+        if not runtime_settings.role.runs_node:
             return
 
         for stop_event in list(self._stop_events.values()):
@@ -183,9 +180,15 @@ class NodeWorkerService(BaseRpcService):
         await core_manager._reload_from_cache()
         async with GetDB() as db:
             if node_ids:
-                nodes, _ = await get_nodes(db, ids=node_ids)
+                nodes, _ = await get_nodes(db, query=NodeListQuery(ids=node_ids))
             else:
-                nodes, _ = await get_nodes(db, enabled=True, core_id=core_id)
+                nodes, _ = await get_nodes(
+                    db,
+                    query=NodeListQuery(
+                        core_id=core_id,
+                        status=[NodeStatus.connected, NodeStatus.connecting, NodeStatus.error],
+                    ),
+                )
             await self._node_operator.connect_nodes_bulk(db, nodes)
 
     async def _disconnect_node(self, data: dict):
@@ -212,6 +215,18 @@ class NodeWorkerService(BaseRpcService):
     async def _get_nodes_system_stats(self, data: dict = None) -> dict:
         stats = await self._node_operator.get_nodes_system_stats()
         return {node_id: value.model_dump() if value else None for node_id, value in stats.items()}
+
+    async def _get_outbounds_latency(self, data: dict) -> dict:
+        node_id = data.get("node_id")
+        if not node_id:
+            raise RuntimeError("node_id is required")
+
+        latency = await self._node_operator.get_outbounds_latency(
+            node_id=node_id,
+            name=data.get("name", ""),
+            timeout=data.get("timeout"),
+        )
+        return latency.model_dump()
 
     async def _get_user_online_stats_by_node(self, data: dict) -> dict:
         node_id = data.get("node_id")
@@ -269,7 +284,7 @@ class NodeWorkerService(BaseRpcService):
         if node is None:
             raise RuntimeError("Node not found")
 
-        log_subject = f"{NATS_NODE_LOG_SUBJECT}.{uuid.uuid4().hex}"
+        log_subject = f"{nats_settings.node_log_subject}.{uuid.uuid4().hex}"
         stop_subject = f"{log_subject}.stop"
 
         stop_event = asyncio.Event()

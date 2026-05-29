@@ -6,11 +6,11 @@ from uuid import uuid4
 
 from fastapi import status
 
-from config import NATS_ENABLED, ROLE
+from config import nats_settings, runtime_settings
 from tests.api import client
 from tests.api.sample_data import XRAY_CONFIG
 
-_WAIT_FOR_INBOUNDS = ROLE.requires_nats and NATS_ENABLED
+_WAIT_FOR_INBOUNDS = runtime_settings.role.requires_nats and nats_settings.enabled
 _INBOUNDS_RETRIES = 10
 _INBOUNDS_DELAY_SEC = 0.2
 
@@ -224,20 +224,24 @@ def create_user_template(
     reset_usages: bool = True,
     username_prefix: str | None = None,
     username_suffix: str | None = None,
+    hwid_limit: int | None = None,
 ) -> dict:
     payload = {
         "name": name or unique_name("user_template"),
         "group_ids": list(group_ids),
         "data_limit": data_limit,
         "expire_duration": expire_duration,
-        "extra_settings": extra_settings or {"flow": "", "method": None},
         "status": status_value,
         "reset_usages": reset_usages,
     }
+    if extra_settings is not None:
+        payload["extra_settings"] = extra_settings
     if username_prefix is not None:
         payload["username_prefix"] = username_prefix
     if username_suffix is not None:
         payload["username_suffix"] = username_suffix
+    if hwid_limit is not None:
+        payload["hwid_limit"] = hwid_limit
     response = client.post("/api/user_template", headers=auth_headers(access_token), json=payload)
     assert response.status_code == status.HTTP_201_CREATED
     return response.json()

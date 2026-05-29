@@ -9,10 +9,12 @@ from jdatetime import date as jd
 
 from app.core.hosts import host_manager
 from app.db.models import UserStatus
+from app.models.status_emojis import STATUS_EMOJIS
 from app.models.subscription import SubscriptionInboundData
 from app.models.user import UsersResponseWithInbounds
 from app.subscription.client_templates import subscription_client_templates, subscription_xray_templates
-from app.utils.system import get_public_ip, get_public_ipv6, readable_size
+from app.utils.system import readable_size
+from config import wireguard_settings
 
 from . import (
     ClashConfiguration,
@@ -24,16 +26,8 @@ from . import (
     XrayConfiguration,
 )
 
-SERVER_IP = get_public_ip()
-SERVER_IPV6 = get_public_ipv6()
-
-STATUS_EMOJIS = {
-    "active": "✅",
-    "expired": "⌛️",
-    "limited": "🪫",
-    "disabled": "❌",
-    "on_hold": "🔌",
-}
+SERVER_IP = "127.0.0.1"
+SERVER_IPV6 = "[::1]"
 
 
 def _build_subscription_config(
@@ -239,11 +233,6 @@ async def process_host(
     if user_id is not None:
         settings["_user_id"] = user_id
 
-    # Handle flow: user settings have priority, fall back to inbound flow
-    if "flow" in settings and settings["flow"] == "":
-        # User has empty flow, use inbound flow as default
-        settings["flow"] = inbound.inbound_flow
-
     # Update format variables
     format_variables.update({"PROTOCOL": inbound.protocol})
     format_variables.update({"TRANSPORT": inbound.network})
@@ -347,7 +336,7 @@ async def process_inbounds_and_tags(
     client_templates: dict[str, str],
     xray_template_overrides: dict[int, str] | None = None,
     randomize_order: bool = False,
-) -> list | str | bytes:
+) -> str | bytes:
     proxy_settings = user.proxy_settings.dict()
     proxy_settings["_user_id"] = user.id
     hosts = await filter_hosts(list((await host_manager.get_hosts()).values()), user.status)
@@ -365,6 +354,9 @@ async def process_inbounds_and_tags(
         return xray_template_overrides.get(template_id)
 
     for host_data in hosts:
+        if host_data.protocol == "wireguard" and not wireguard_settings.enabled:
+            continue
+
         result = await process_host(host_data, format_variables, user.inbounds, proxy_settings)
         if not result:
             continue

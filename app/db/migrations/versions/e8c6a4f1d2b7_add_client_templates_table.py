@@ -6,10 +6,11 @@ Create Date: 2026-02-20 15:45:00.000000
 
 """
 
-import os
 from pathlib import Path
 
 from alembic import op
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 import sqlalchemy as sa
 
 
@@ -21,6 +22,27 @@ depends_on = None
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
+
+
+class MigrationSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    custom_templates_directory: str | None = Field(default=None, validation_alias="CUSTOM_TEMPLATES_DIRECTORY")
+    clash_subscription_template: str | None = Field(default=None, validation_alias="CLASH_SUBSCRIPTION_TEMPLATE")
+    xray_subscription_template: str | None = Field(default=None, validation_alias="XRAY_SUBSCRIPTION_TEMPLATE")
+    singbox_subscription_template: str | None = Field(default=None, validation_alias="SINGBOX_SUBSCRIPTION_TEMPLATE")
+    user_agent_template: str | None = Field(default=None, validation_alias="USER_AGENT_TEMPLATE")
+    grpc_user_agent_template: str | None = Field(default=None, validation_alias="GRPC_USER_AGENT_TEMPLATE")
+
+
+migration_settings = MigrationSettings()
+TEMPLATE_OVERRIDES = {
+    "CLASH_SUBSCRIPTION_TEMPLATE": migration_settings.clash_subscription_template,
+    "XRAY_SUBSCRIPTION_TEMPLATE": migration_settings.xray_subscription_template,
+    "SINGBOX_SUBSCRIPTION_TEMPLATE": migration_settings.singbox_subscription_template,
+    "USER_AGENT_TEMPLATE": migration_settings.user_agent_template,
+    "GRPC_USER_AGENT_TEMPLATE": migration_settings.grpc_user_agent_template,
+}
 
 
 DEFAULT_CLASH_SUBSCRIPTION_TEMPLATE = """mode: rule
@@ -43,8 +65,8 @@ dns:
   nameserver:
     - 'https://1.1.1.1/dns-query#PROXY'
   proxy-server-nameserver:
-    - '178.22.122.100'
-    - '78.157.42.100'
+    - '8.8.8.8'
+    - '1.1.1.1'
 
 sniffer:
   enable: true
@@ -354,8 +376,8 @@ def _template_content_or_default(
     path_from_project_root: str,
     default_content: str,
 ) -> str:
-    env_value = os.getenv(env_key)
-    custom_templates_directory = os.getenv("CUSTOM_TEMPLATES_DIRECTORY")
+    env_value = TEMPLATE_OVERRIDES.get(env_key)
+    custom_templates_directory = migration_settings.custom_templates_directory
     if custom_templates_directory and env_value:
         custom_file_path = Path(custom_templates_directory) / env_value
         try:
@@ -373,20 +395,33 @@ def _template_content_or_default(
     return default_content
 
 
-def upgrade() -> None:
-    op.create_table(
-        "client_templates",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("name", sa.String(length=64), nullable=False),
-        sa.Column("template_type", sa.String(length=32), nullable=False),
-        sa.Column("content", sa.Text(), nullable=False),
-        sa.Column("is_default", sa.Boolean(), server_default="0", nullable=False),
-        sa.Column("is_system", sa.Boolean(), server_default="0", nullable=False),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("template_type", "name"),
-    )
-    op.create_index("ix_client_templates_template_type", "client_templates", ["template_type"], unique=False)
+def _table_exists(bind: sa.Connection, table_name: str) -> bool:
+    inspector = sa.inspect(bind)
+    return table_name in inspector.get_table_names()
 
+
+def _has_unique_constraint(bind: sa.Connection, table_name: str, columns: tuple[str, ...]) -> bool:
+    inspector = sa.inspect(bind)
+    expected = list(columns)
+    for constraint in inspector.get_unique_constraints(table_name):
+        if constraint.get("column_names") == expected:
+            return True
+    for index in inspector.get_indexes(table_name):
+        if index.get("unique") and index.get("column_names") == expected:
+            return True
+    return False
+
+
+def _has_index(bind: sa.Connection, table_name: str, columns: tuple[str, ...]) -> bool:
+    inspector = sa.inspect(bind)
+    expected = list(columns)
+    for index in inspector.get_indexes(table_name):
+        if index.get("column_names") == expected:
+            return True
+    return False
+
+
+def _default_template_rows() -> list[dict[str, object]]:
     clash_template_content = _template_content_or_default(
         "CLASH_SUBSCRIPTION_TEMPLATE",
         "app/templates/clash/default.yml",
@@ -412,56 +447,88 @@ def upgrade() -> None:
         "app/templates/user_agent/grpc.json",
         DEFAULT_GRPC_USER_AGENT_TEMPLATE,
     )
+    return [
+        {
+            "name": "Default Clash Subscription",
+            "template_type": "clash_subscription",
+            "content": clash_template_content,
+            "is_default": True,
+            "is_system": True,
+        },
+        {
+            "name": "Default Xray Subscription",
+            "template_type": "xray_subscription",
+            "content": xray_template_content,
+            "is_default": True,
+            "is_system": True,
+        },
+        {
+            "name": "Default Singbox Subscription",
+            "template_type": "singbox_subscription",
+            "content": singbox_template_content,
+            "is_default": True,
+            "is_system": True,
+        },
+        {
+            "name": "Default User-Agent Template",
+            "template_type": "user_agent",
+            "content": user_agent_template_content,
+            "is_default": True,
+            "is_system": True,
+        },
+        {
+            "name": "Default gRPC User-Agent Template",
+            "template_type": "grpc_user_agent",
+            "content": grpc_user_agent_template_content,
+            "is_default": True,
+            "is_system": True,
+        },
+    ]
 
-    op.bulk_insert(
-        sa.table(
+
+def upgrade() -> None:
+    bind = op.get_bind()
+
+    if not _table_exists(bind, "client_templates"):
+        op.create_table(
             "client_templates",
-            sa.Column("name", sa.String),
-            sa.Column("template_type", sa.String),
-            sa.Column("content", sa.Text),
-            sa.Column("is_default", sa.Boolean),
-            sa.Column("is_system", sa.Boolean),
-        ),
-        [
-            {
-                "name": "Default Clash Subscription",
-                "template_type": "clash_subscription",
-                "content": clash_template_content,
-                "is_default": True,
-                "is_system": True,
-            },
-            {
-                "name": "Default Xray Subscription",
-                "template_type": "xray_subscription",
-                "content": xray_template_content,
-                "is_default": True,
-                "is_system": True,
-            },
-            {
-                "name": "Default Singbox Subscription",
-                "template_type": "singbox_subscription",
-                "content": singbox_template_content,
-                "is_default": True,
-                "is_system": True,
-            },
-            {
-                "name": "Default User-Agent Template",
-                "template_type": "user_agent",
-                "content": user_agent_template_content,
-                "is_default": True,
-                "is_system": True,
-            },
-            {
-                "name": "Default gRPC User-Agent Template",
-                "template_type": "grpc_user_agent",
-                "content": grpc_user_agent_template_content,
-                "is_default": True,
-                "is_system": True,
-            },
-        ],
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.Column("name", sa.String(length=64), nullable=False),
+            sa.Column("template_type", sa.String(length=32), nullable=False),
+            sa.Column("content", sa.Text(), nullable=False),
+            sa.Column("is_default", sa.Boolean(), server_default="0", nullable=False),
+            sa.Column("is_system", sa.Boolean(), server_default="0", nullable=False),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("template_type", "name"),
+        )
+    elif not _has_unique_constraint(bind, "client_templates", ("template_type", "name")):
+        op.create_unique_constraint(
+            "uq_client_templates_template_type",
+            "client_templates",
+            ["template_type", "name"],
+        )
+
+    if not _has_index(bind, "client_templates", ("template_type",)):
+        op.create_index("ix_client_templates_template_type", "client_templates", ["template_type"], unique=False)
+
+    client_templates = sa.table(
+        "client_templates",
+        sa.Column("name", sa.String),
+        sa.Column("template_type", sa.String),
+        sa.Column("content", sa.Text),
+        sa.Column("is_default", sa.Boolean),
+        sa.Column("is_system", sa.Boolean),
     )
+    existing_keys = {
+        (row.template_type, row.name)
+        for row in bind.execute(sa.select(client_templates.c.template_type, client_templates.c.name))
+    }
+    missing_rows = [row for row in _default_template_rows() if (row["template_type"], row["name"]) not in existing_keys]
+    if missing_rows:
+        op.bulk_insert(client_templates, missing_rows)
 
 
 def downgrade() -> None:
-    op.drop_index("ix_client_templates_template_type", table_name="client_templates")
-    op.drop_table("client_templates")
+    bind = op.get_bind()
+    if _table_exists(bind, "client_templates"):
+        op.drop_table("client_templates")

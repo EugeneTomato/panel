@@ -5,9 +5,13 @@ Broken down into small, focused models - each transport/protocol gets only what 
 
 from __future__ import annotations
 
+from datetime import datetime as dt
 from typing import Any
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
+
+from app.models.stats import Period
+from app.utils.helpers import fix_datetime_timezone
 
 
 class TLSConfig(BaseModel):
@@ -113,7 +117,9 @@ class XHTTPTransportConfig(BaseTransportConfig):
     seq_key: str | None = Field(None, serialization_alias="seqKey")
     uplink_data_placement: str | None = Field(None, serialization_alias="uplinkDataPlacement")
     uplink_data_key: str | None = Field(None, serialization_alias="uplinkDataKey")
-    uplink_chunk_size: int | None = Field(None, serialization_alias="uplinkChunkSize")
+    uplink_chunk_size: str | int | None = Field(
+        None, serialization_alias="uplinkChunkSize", pattern=r"^\d{1,16}(?:-\d{1,16})?$"
+    )
     xmux: dict[str, Any] | None = Field(None)
     download_settings: SubscriptionInboundData | dict | None = Field(None, serialization_alias="downloadSettings")
     http_headers: dict[str, str] | None = Field(None)
@@ -250,7 +256,6 @@ class SubscriptionInboundData(BaseModel):
 
     # Flow (from inbound, user can override)
     inbound_flow: str = Field("")
-    flow_enabled: bool = Field(False)  # Computed once: if this inbound supports flow
 
     # Additional settings
     random_user_agent: bool = Field(False)
@@ -266,3 +271,25 @@ class SubscriptionInboundData(BaseModel):
     subscription_templates: dict[str, Any] | None = Field(default=None)
 
     model_config = {"validate_assignment": True}
+
+
+class SubscriptionUsageQuery(BaseModel):
+    period: Period = Field(default=Period.hour)
+    start: dt | None = Field(default=None, examples=["2024-01-01T00:00:00+03:30"])
+    end: dt | None = Field(default=None, examples=["2024-01-31T23:59:59+03:30"])
+
+    @field_validator("start", "end", mode="before")
+    @classmethod
+    def validate_datetimes(cls, value):
+        if not value:
+            return value
+        return fix_datetime_timezone(value)
+
+
+class SubscriptionHeaders(BaseModel):
+    x_hwid: str | None = Field(default=None, alias="X-HWID")
+    x_device_os: str | None = Field(default=None, alias="X-Device-OS")
+    x_ver_os: str | None = Field(default=None, alias="X-Ver-OS")
+    x_device_model: str | None = Field(default=None, alias="X-Device-Model")
+
+    model_config = {"populate_by_name": True}

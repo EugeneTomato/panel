@@ -3,7 +3,7 @@ import { useAdmin } from '@/hooks/use-admin'
 import { cn } from '@/lib/utils'
 import { useGetSettings, useModifySettings } from '@/service/api'
 import { useQueryClient } from '@tanstack/react-query'
-import { Bell, Database, ListTodo, LucideIcon, MessageCircle, Palette, Send, Settings as SettingsIcon, Webhook } from 'lucide-react'
+import { Bell, Database, Fingerprint, ListTodo, LucideIcon, MessageCircle, Palette, Send, Settings as SettingsIcon, Webhook } from 'lucide-react'
 import { createContext, useCallback, useContext, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Outlet, useLocation, useNavigate } from 'react-router'
@@ -21,7 +21,7 @@ interface SettingsContextType {
   settings: any
   isLoading: boolean
   error: any
-  updateSettings: (data: any) => void
+  updateSettings: (data: any) => Promise<void>
   isSaving: boolean
 }
 
@@ -40,6 +40,7 @@ const sudoTabs: Tab[] = [
   { id: 'general', label: 'settings.general.title', icon: SettingsIcon, url: '/settings/general' },
   { id: 'notifications', label: 'settings.notifications.title', icon: Bell, url: '/settings/notifications' },
   { id: 'subscriptions', label: 'settings.subscriptions.title', icon: ListTodo, url: '/settings/subscriptions' },
+  { id: 'hwid', label: 'settings.hwid.title', icon: Fingerprint, url: '/settings/hwid' },
   { id: 'telegram', label: 'settings.telegram.title', icon: Send, url: '/settings/telegram' },
   { id: 'discord', label: 'settings.discord.title', icon: MessageCircle, url: '/settings/discord' },
   { id: 'webhook', label: 'settings.webhook.title', icon: Webhook, url: '/settings/webhook' },
@@ -74,12 +75,13 @@ export default function Settings() {
       enabled: is_sudo, // Only fetch for sudo admins
     },
   })
-  const { mutate: updateSettings, isPending: isSaving } = useModifySettings({
+  const { mutateAsync: modifySettingsAsync, isPending: isSaving } = useModifySettings({
     mutation: {
       onSuccess: () => {
         toast.success(t(`settings.${activeTab}.saveSuccess`))
         // Invalidate settings query to refresh with new data from API response
         queryClient.invalidateQueries({ queryKey: ['/api/settings'] })
+        queryClient.invalidateQueries({ queryKey: ['/api/settings/general'] })
       },
       onError: (error: any) => {
         // Extract validation errors from FetchError
@@ -135,7 +137,7 @@ export default function Settings() {
 
   // Wrapper function to filter data based on active tab (only for sudo admins)
   const handleUpdateSettings = useCallback(
-    (data: any) => {
+    async (data: any) => {
       if (!is_sudo) return // No-op for non-sudo admins
 
       let filteredData: any = {}
@@ -169,6 +171,9 @@ export default function Settings() {
             filteredData = data
           }
           break
+        case 'hwid':
+          filteredData = data.hwid ? { data: { hwid: data.hwid } } : data
+          break
         case 'telegram':
           // Add telegram specific filtering if needed
           filteredData = { data: data }
@@ -192,9 +197,9 @@ export default function Settings() {
           filteredData = { data: data }
       }
 
-      updateSettings(filteredData)
+      await modifySettingsAsync(filteredData)
     },
-    [is_sudo, activeTab, updateSettings],
+    [is_sudo, activeTab, modifySettingsAsync],
   )
 
   // Memoize context value to ensure stability during HMR
@@ -203,7 +208,7 @@ export default function Settings() {
       settings: is_sudo ? settings || {} : {}, // Non-sudo admins don't need settings data
       isLoading: is_sudo ? isLoading : false,
       error: is_sudo ? error : null,
-      updateSettings: is_sudo ? handleUpdateSettings : () => { }, // No-op for non-sudo admins
+      updateSettings: is_sudo ? handleUpdateSettings : async () => {}, // No-op for non-sudo admins
       isSaving: is_sudo ? isSaving : false,
     }),
     [is_sudo, settings, isLoading, error, isSaving, handleUpdateSettings],

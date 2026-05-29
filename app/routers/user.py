@@ -1,39 +1,61 @@
-from datetime import datetime as dt
-from typing import Literal
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.db import AsyncSession, get_db
-from app.db.models import UserStatus
 from app.models.admin import AdminDetails
-from app.models.stats import Period, UserUsageStatsList
+from app.models.settings import ConfigFormat
+from app.models.stats import (
+    UserCountMetric,
+    UserCountMetricStatsList,
+    UserUsageStatsList,
+    validate_user_count_metric_scope,
+)
 from app.models.user import (
     BulkUser,
+    BulkUsersActionResponse,
     BulkUsersCreateResponse,
     BulkUsersFromTemplate,
     BulkUsersProxy,
+    BulkUsersApplyTemplate,
+    BulkUsersSelection,
+    BulkUsersSetOwner,
     BulkWireGuardPeerIPs,
     CreateUserFromTemplate,
+    ExpiredUsersQuery,
     ModifyUserByTemplate,
     RemoveUsersResponse,
     UserCreate,
+    UserListQuery,
     UserModify,
     UserResponse,
+    UserSimpleListQuery,
+    UserUsageQuery,
     UsersResponse,
     UsersSimpleResponse,
+    UsersUsageQuery,
     UserSubscriptionUpdateChart,
     UserSubscriptionUpdateList,
     WireGuardPeerIPsReallocateResponse,
 )
 from app.operation import OperatorType
 from app.operation.node import NodeOperation
+from app.operation.subscription import SubscriptionOperation
 from app.operation.user import UserOperation
 from app.utils import responses
+from .dependencies import (
+    get_expired_users_query,
+    get_user_list_query,
+    get_user_simple_list_query,
+    get_user_usage_query,
+    get_users_usage_query,
+)
 
 from .authentication import check_sudo_admin, get_current
 
 user_operator = UserOperation(operator_type=OperatorType.API)
 node_operator = NodeOperation(operator_type=OperatorType.API)
+subscription_operator = SubscriptionOperation(operator_type=OperatorType.API)
 router = APIRouter(tags=["User"], prefix="/api/user", responses={401: responses._401})
 
 
@@ -96,12 +118,62 @@ async def modify_user(
     return await user_operator.modify_user(db, username=username, modified_user=modified_user, admin=admin)
 
 
+@router.put(
+    "/by-username/{username}",
+    response_model=UserResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def modify_user_by_username(
+    username: str,
+    modified_user: UserModify,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(get_current),
+):
+    return await user_operator.modify_user(db, username=username, modified_user=modified_user, admin=admin)
+
+
+@router.put(
+    "/by-id/{user_id}",
+    response_model=UserResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def modify_user_by_id(
+    user_id: int,
+    modified_user: UserModify,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(get_current),
+):
+    return await user_operator.modify_user_by_id(db, user_id=user_id, modified_user=modified_user, admin=admin)
+
+
 @router.delete(
     "/{username}", responses={403: responses._403, 404: responses._404}, status_code=status.HTTP_204_NO_CONTENT
 )
 async def remove_user(username: str, db: AsyncSession = Depends(get_db), admin: AdminDetails = Depends(get_current)):
     """Remove a user"""
     return await user_operator.remove_user(db, username=username, admin=admin)
+
+
+@router.delete(
+    "/by-username/{username}",
+    responses={403: responses._403, 404: responses._404},
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def remove_user_by_username(
+    username: str, db: AsyncSession = Depends(get_db), admin: AdminDetails = Depends(get_current)
+):
+    return await user_operator.remove_user(db, username=username, admin=admin)
+
+
+@router.delete(
+    "/by-id/{user_id}",
+    responses={403: responses._403, 404: responses._404},
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def remove_user_by_id(
+    user_id: int, db: AsyncSession = Depends(get_db), admin: AdminDetails = Depends(get_current)
+):
+    return await user_operator.remove_user_by_id(db, user_id=user_id, admin=admin)
 
 
 @router.post("/{username}/reset", response_model=UserResponse, responses={403: responses._403, 404: responses._404})
@@ -113,6 +185,26 @@ async def reset_user_data_usage(
 
 
 @router.post(
+    "/by-username/{username}/reset",
+    response_model=UserResponse,
+    responses={403: responses._403, 404: responses._404},
+)
+async def reset_user_data_usage_by_username(
+    username: str, db: AsyncSession = Depends(get_db), admin: AdminDetails = Depends(get_current)
+):
+    return await user_operator.reset_user_data_usage(db, username=username, admin=admin)
+
+
+@router.post(
+    "/by-id/{user_id}/reset", response_model=UserResponse, responses={403: responses._403, 404: responses._404}
+)
+async def reset_user_data_usage_by_id(
+    user_id: int, db: AsyncSession = Depends(get_db), admin: AdminDetails = Depends(get_current)
+):
+    return await user_operator.reset_user_data_usage_by_id(db, user_id=user_id, admin=admin)
+
+
+@router.post(
     "/{username}/revoke_sub", response_model=UserResponse, responses={403: responses._403, 404: responses._404}
 )
 async def revoke_user_subscription(
@@ -120,6 +212,28 @@ async def revoke_user_subscription(
 ):
     """Revoke users subscription (Subscription link and proxies)"""
     return await user_operator.revoke_user_sub(db, username=username, admin=admin)
+
+
+@router.post(
+    "/by-username/{username}/revoke_sub",
+    response_model=UserResponse,
+    responses={403: responses._403, 404: responses._404},
+)
+async def revoke_user_subscription_by_username(
+    username: str, db: AsyncSession = Depends(get_db), admin: AdminDetails = Depends(get_current)
+):
+    return await user_operator.revoke_user_sub(db, username=username, admin=admin)
+
+
+@router.post(
+    "/by-id/{user_id}/revoke_sub",
+    response_model=UserResponse,
+    responses={403: responses._403, 404: responses._404},
+)
+async def revoke_user_subscription_by_id(
+    user_id: int, db: AsyncSession = Depends(get_db), admin: AdminDetails = Depends(get_current)
+):
+    return await user_operator.revoke_user_sub_by_id(db, user_id=user_id, admin=admin)
 
 
 @router.post("s/reset", responses={403: responses._403, 404: responses._404})
@@ -136,13 +250,20 @@ async def reset_users_data_usage(db: AsyncSession = Depends(get_db), admin: Admi
     responses={403: responses._403, 404: responses._404},
 )
 async def get_users_sub_update_chart(
+    user_id: int | None = None,
     username: str | None = None,
     admin_id: int | None = None,
     db: AsyncSession = Depends(get_db),
     admin: AdminDetails = Depends(get_current),
 ):
-    """Get subscription agent distribution percentages (optionally filtered by username)"""
-    return await user_operator.get_users_sub_update_chart(db, admin=admin, username=username, admin_id=admin_id)
+    """Get subscription agent distribution percentages (optionally filtered by user_id/username)."""
+    return await user_operator.get_users_sub_update_chart(
+        db,
+        admin=admin,
+        user_id=user_id,
+        username=username,
+        admin_id=admin_id,
+    )
 
 
 @router.put("/{username}/set_owner", response_model=UserResponse, responses={403: responses._403})
@@ -156,6 +277,26 @@ async def set_owner(
     return await user_operator.set_owner(db, username=username, admin_username=admin_username, admin=admin)
 
 
+@router.put("/by-username/{username}/set_owner", response_model=UserResponse, responses={403: responses._403})
+async def set_owner_by_username(
+    username: str,
+    admin_username: str,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(check_sudo_admin),
+):
+    return await user_operator.set_owner(db, username=username, admin_username=admin_username, admin=admin)
+
+
+@router.put("/by-id/{user_id}/set_owner", response_model=UserResponse, responses={403: responses._403})
+async def set_owner_by_id(
+    user_id: int,
+    admin_username: str,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(check_sudo_admin),
+):
+    return await user_operator.set_owner_by_id(db, user_id=user_id, admin_username=admin_username, admin=admin)
+
+
 @router.post(
     "/{username}/active_next", response_model=UserResponse, responses={403: responses._403, 404: responses._404}
 )
@@ -166,10 +307,65 @@ async def active_next_plan(
     return await user_operator.active_next_plan(db, username=username, admin=admin)
 
 
+@router.post(
+    "/by-username/{username}/active_next",
+    response_model=UserResponse,
+    responses={403: responses._403, 404: responses._404},
+)
+async def active_next_plan_by_username(
+    username: str, db: AsyncSession = Depends(get_db), admin: AdminDetails = Depends(get_current)
+):
+    return await user_operator.active_next_plan(db, username=username, admin=admin)
+
+
+@router.post(
+    "/by-id/{user_id}/active_next", response_model=UserResponse, responses={403: responses._403, 404: responses._404}
+)
+async def active_next_plan_by_id(
+    user_id: int, db: AsyncSession = Depends(get_db), admin: AdminDetails = Depends(get_current)
+):
+    return await user_operator.active_next_plan_by_id(db, user_id=user_id, admin=admin)
+
+
 @router.get("/{username}", response_model=UserResponse, responses={403: responses._403, 404: responses._404})
 async def get_user(username: str, db: AsyncSession = Depends(get_db), admin: AdminDetails = Depends(get_current)):
     """Get user information"""
     return await user_operator.get_user(db=db, username=username, admin=admin)
+
+
+@router.get(
+    "/by-username/{username}", response_model=UserResponse, responses={403: responses._403, 404: responses._404}
+)
+async def get_user_by_username(
+    username: str, db: AsyncSession = Depends(get_db), admin: AdminDetails = Depends(get_current)
+):
+    return await user_operator.get_user(db=db, username=username, admin=admin)
+
+
+@router.get("/by-id/{user_id}", response_model=UserResponse, responses={403: responses._403, 404: responses._404})
+async def get_user_by_id(user_id: int, db: AsyncSession = Depends(get_db), admin: AdminDetails = Depends(get_current)):
+    return await user_operator.get_user_by_id(db=db, user_id=user_id, admin=admin)
+
+
+@router.get(
+    "/{user_id}/subscription/{client_type}",
+    responses={403: responses._403, 404: responses._404},
+)
+async def get_user_subscription_by_id(
+    request: Request,
+    user_id: int,
+    client_type: ConfigFormat,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(get_current),
+):
+    """Get a user's subscription content in the requested format."""
+    return await subscription_operator.user_subscription_by_id(
+        db,
+        user_id=user_id,
+        admin=admin,
+        client_type=client_type,
+        request_url=str(request.url),
+    )
 
 
 @router.get(
@@ -189,37 +385,51 @@ async def get_user_sub_update_list(
 
 
 @router.get(
+    "/by-username/{username}/sub_update",
+    response_model=UserSubscriptionUpdateList,
+    responses={403: responses._403, 404: responses._404},
+)
+async def get_user_sub_update_list_by_username(
+    username: str,
+    offset: int = 0,
+    limit: int = 10,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(get_current),
+):
+    return await user_operator.get_users_sub_update_list(db, username=username, admin=admin, offset=offset, limit=limit)
+
+
+@router.get(
+    "/by-id/{user_id}/sub_update",
+    response_model=UserSubscriptionUpdateList,
+    responses={403: responses._403, 404: responses._404},
+)
+async def get_user_sub_update_list_by_id(
+    user_id: int,
+    offset: int = 0,
+    limit: int = 10,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(get_current),
+):
+    return await user_operator.get_users_sub_update_list_by_id(
+        db,
+        user_id=user_id,
+        admin=admin,
+        offset=offset,
+        limit=limit,
+    )
+
+
+@router.get(
     "s", response_model=UsersResponse, responses={400: responses._400, 403: responses._403, 404: responses._404}
 )
 async def get_users(
-    offset: int = None,
-    limit: int = None,
-    username: list[str] = Query(None),
-    owner: list[str] | None = Query(None, alias="admin"),
-    group_ids: list[int] | None = Query(None, alias="group"),
-    search: str | None = None,
-    status: UserStatus | None = None,
-    sort: str | None = None,
-    proxy_id: str | None = None,
-    load_sub: bool = False,
+    query: Annotated[UserListQuery, Depends(get_user_list_query)],
     db: AsyncSession = Depends(get_db),
     admin: AdminDetails = Depends(get_current),
 ):
     """Get all users"""
-    return await user_operator.get_users(
-        db=db,
-        admin=admin,
-        offset=offset,
-        limit=limit,
-        username=username,
-        search=search,
-        owner=owner,
-        status=status,
-        sort=sort,
-        load_sub=load_sub,
-        proxy_id=proxy_id,
-        group_ids=group_ids,
-    )
+    return await user_operator.get_users(db=db, admin=admin, query=query)
 
 
 @router.get(
@@ -230,24 +440,12 @@ async def get_users(
     responses={400: responses._400, 403: responses._403},
 )
 async def get_users_simple(
-    offset: int = None,
-    limit: int = None,
-    search: str | None = None,
-    sort: str | None = None,
-    all: bool = False,
+    query: Annotated[UserSimpleListQuery, Depends(get_user_simple_list_query)],
     db: AsyncSession = Depends(get_db),
     admin: AdminDetails = Depends(get_current),
 ):
     """Get lightweight user list with only id and username"""
-    return await user_operator.get_users_simple(
-        db=db,
-        admin=admin,
-        offset=offset,
-        limit=limit,
-        search=search,
-        sort=sort,
-        all=all,
-    )
+    return await user_operator.get_users_simple(db=db, admin=admin, query=query)
 
 
 @router.get(
@@ -255,59 +453,77 @@ async def get_users_simple(
 )
 async def get_user_usage(
     username: str,
-    period: Period,
-    node_id: int | None = None,
-    group_by_node: bool = False,
-    start: dt | None = Query(None, examples=["2024-01-01T00:00:00+03:30"]),
-    end: dt | None = Query(None, examples=["2024-01-31T23:59:59+03:30"]),
+    query: Annotated[UserUsageQuery, Depends(get_user_usage_query)],
     db: AsyncSession = Depends(get_db),
     admin: AdminDetails = Depends(get_current),
 ):
     """Get users usage"""
-    return await user_operator.get_user_usage(
-        db,
-        username=username,
-        admin=admin,
-        start=start,
-        end=end,
-        period=period,
-        node_id=node_id,
-        group_by_node=group_by_node,
-    )
+    return await user_operator.get_user_usage(db, username=username, admin=admin, query=query)
+
+
+@router.get(
+    "/by-username/{username}/usage",
+    response_model=UserUsageStatsList,
+    responses={403: responses._403, 404: responses._404},
+)
+async def get_user_usage_by_username(
+    username: str,
+    query: Annotated[UserUsageQuery, Depends(get_user_usage_query)],
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(get_current),
+):
+    return await user_operator.get_user_usage(db, username=username, admin=admin, query=query)
+
+
+@router.get(
+    "/by-id/{user_id}/usage",
+    response_model=UserUsageStatsList,
+    responses={403: responses._403, 404: responses._404},
+)
+async def get_user_usage_by_id(
+    user_id: int,
+    query: Annotated[UserUsageQuery, Depends(get_user_usage_query)],
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(get_current),
+):
+    return await user_operator.get_user_usage_by_id(db, user_id=user_id, admin=admin, query=query)
 
 
 @router.get("s/usage", response_model=UserUsageStatsList)
 async def get_users_usage(
-    period: Period,
-    node_id: int | None = None,
-    group_by_node: bool = False,
-    start: dt | None = Query(None, examples=["2024-01-01T00:00:00+03:30"]),
-    end: dt | None = Query(None, examples=["2024-01-31T23:59:59+03:30"]),
+    query: Annotated[UsersUsageQuery, Depends(get_users_usage_query)],
     db: AsyncSession = Depends(get_db),
-    owner: list[str] | None = Query(None, alias="admin"),
     admin: AdminDetails = Depends(get_current),
 ):
     """Get all users usage"""
-    return await user_operator.get_users_usage(
-        db,
-        admin=admin,
-        start=start,
-        end=end,
-        owner=owner,
-        period=period,
-        node_id=node_id,
-        group_by_node=group_by_node,
-    )
+    return await user_operator.get_users_usage(db, admin=admin, query=query)
+
+
+@router.get("s/counts/{metric}", response_model=UserCountMetricStatsList)
+async def get_users_count_metric(
+    metric: UserCountMetric,
+    query: Annotated[UsersUsageQuery, Depends(get_users_usage_query)],
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(get_current),
+):
+    """Get one users activity/status count metric from usage rows."""
+    try:
+        validate_user_count_metric_scope(
+            metric,
+            node_id=query.node_id if admin.is_sudo else None,
+            group_by_node=query.group_by_node if admin.is_sudo else False,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return await user_operator.get_users_count_metric(db, admin=admin, metric=metric, query=query)
 
 
 @router.get("s/expired", response_model=list[str])
 async def get_expired_users(
+    query: Annotated[ExpiredUsersQuery, Depends(get_expired_users_query)],
     db: AsyncSession = Depends(get_db),
     _: AdminDetails = Depends(check_sudo_admin),
-    admin_username: str | None = None,
-    target: Literal["expired", "limited"] = Query("expired"),
-    expired_after: dt | None = Query(None, examples=["2024-01-01T00:00:00+03:30"]),
-    expired_before: dt | None = Query(None, examples=["2024-01-31T23:59:59+03:30"]),
 ):
     """
     Get cleanup-target users in the specified scope.
@@ -318,23 +534,14 @@ async def get_expired_users(
     - Date range filters are applied only when target is `expired`
     """
 
-    return await user_operator.get_expired_users(
-        db,
-        expired_after,
-        expired_before,
-        admin_username,
-        target=target,
-    )
+    return await user_operator.get_expired_users(db, query=query)
 
 
 @router.delete("s/expired", response_model=RemoveUsersResponse)
 async def delete_expired_users(
+    query: Annotated[ExpiredUsersQuery, Depends(get_expired_users_query)],
     db: AsyncSession = Depends(get_db),
     admin: AdminDetails = Depends(check_sudo_admin),
-    admin_username: str | None = None,
-    target: Literal["expired", "limited"] = Query("expired"),
-    expired_after: dt | None = Query(None, examples=["2024-01-01T00:00:00+03:30"]),
-    expired_before: dt | None = Query(None, examples=["2024-01-31T23:59:59+03:30"]),
 ):
     """
     Delete cleanup-target users in the specified scope.
@@ -344,9 +551,91 @@ async def delete_expired_users(
     - **expired_before** UTC datetime (optional)
     - Date range filters are applied only when target is `expired`
     """
-    return await user_operator.delete_expired_users(
-        db, admin, expired_after, expired_before, admin_username=admin_username, target=target
-    )
+    return await user_operator.delete_expired_users(db, admin, query=query)
+
+
+@router.post(
+    "s/bulk/delete",
+    response_model=RemoveUsersResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_delete_users(
+    bulk_users: BulkUsersSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(get_current),
+):
+    """Delete selected users by ID."""
+    return await user_operator.bulk_remove_users(db, bulk_users, admin)
+
+
+@router.post(
+    "s/bulk/reset",
+    response_model=BulkUsersActionResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_reset_users_data_usage(
+    bulk_users: BulkUsersSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(get_current),
+):
+    """Reset usage for selected users by ID."""
+    return await user_operator.bulk_reset_user_data_usage(db, bulk_users, admin)
+
+
+@router.post(
+    "s/bulk/disable",
+    response_model=BulkUsersActionResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_disable_users(
+    bulk_users: BulkUsersSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(get_current),
+):
+    """Disable selected users by ID."""
+    return await user_operator.bulk_disable_users(db, bulk_users, admin)
+
+
+@router.post(
+    "s/bulk/enable",
+    response_model=BulkUsersActionResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_enable_users(
+    bulk_users: BulkUsersSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(get_current),
+):
+    """Enable selected users by ID."""
+    return await user_operator.bulk_enable_users(db, bulk_users, admin)
+
+
+@router.post(
+    "s/bulk/revoke_sub",
+    response_model=BulkUsersActionResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_revoke_users_subscription(
+    bulk_users: BulkUsersSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(get_current),
+):
+    """Revoke subscriptions for selected users by ID."""
+    return await user_operator.bulk_revoke_user_sub(db, bulk_users, admin)
+
+
+@router.put(
+    "s/bulk/set_owner",
+    response_model=BulkUsersActionResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_set_owner(
+    bulk_users: BulkUsersSetOwner,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(check_sudo_admin),
+):
+    """Set a new owner for selected users by ID."""
+    return await user_operator.bulk_set_owner(db, bulk_users, admin)
 
 
 @router.post("/from_template", status_code=status.HTTP_201_CREATED, response_model=UserResponse)
@@ -382,6 +671,20 @@ async def bulk_create_users_from_template(
     return await user_operator.bulk_create_users_from_template(db, bulk_template_users, admin)
 
 
+@router.post(
+    "s/bulk/apply_template",
+    response_model=BulkUsersActionResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_apply_template_to_users(
+    body: BulkUsersApplyTemplate,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(get_current),
+):
+    """Apply a user template to selected existing users by ID."""
+    return await user_operator.bulk_apply_template_to_users(db, body, admin)
+
+
 @router.put("/from_template/{username}", response_model=UserResponse)
 async def modify_user_with_template(
     username: str,
@@ -390,6 +693,26 @@ async def modify_user_with_template(
     admin: AdminDetails = Depends(get_current),
 ):
     return await user_operator.modify_user_with_template(db, username, modify_template_user, admin)
+
+
+@router.put("/from_template/by-username/{username}", response_model=UserResponse)
+async def modify_user_with_template_by_username(
+    username: str,
+    modify_template_user: ModifyUserByTemplate,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(get_current),
+):
+    return await user_operator.modify_user_with_template(db, username, modify_template_user, admin)
+
+
+@router.put("/from_template/by-id/{user_id}", response_model=UserResponse)
+async def modify_user_with_template_by_id(
+    user_id: int,
+    modify_template_user: ModifyUserByTemplate,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(get_current),
+):
+    return await user_operator.modify_user_with_template_by_id(db, user_id, modify_template_user, admin)
 
 
 @router.post("s/bulk/expire", summary="Bulk sum/sub to expire of users", response_description="Success confirmation")
@@ -406,8 +729,8 @@ async def bulk_modify_users_expire(
     - **admins**: Optional list of admin IDs — their users will be targeted
     - **status**: Optional status to filter users (e.g., "expired", "active"), Empty means no filtering
     - **group_ids**: Optional list of group IDs to filter users by their group membership
-    - **expired_after**: Optional UTC datetime to filter users who expired after this date (works only if "expired" status is selected)
-    - **expired_before**: Optional UTC datetime to filter users who expired before this date (works only if "expired" status is selected)
+    - **expire_after**: Optional UTC datetime to filter users whose expire date is on or after this date
+    - **expire_before**: Optional UTC datetime to filter users whose expire date is on or before this date
     """
     return await user_operator.bulk_modify_expire(db, bulk_model)
 
@@ -428,8 +751,8 @@ async def bulk_modify_users_datalimit(
     - **admins**: Optional list of admin IDs — their users will be targeted
     - **status**: Optional status to filter users (e.g., "expired", "active"), Empty means no filtering
     - **group_ids**: Optional list of group IDs to filter users by their group membership
-    - **expired_after**: Optional UTC datetime to filter users who expired after this date (works only if "expired" status is selected)
-    - **expired_before**: Optional UTC datetime to filter users who expired before this date (works only if "expired" status is selected)
+    - **expire_after**: Optional UTC datetime to filter users whose expire date is on or after this date
+    - **expire_before**: Optional UTC datetime to filter users whose expire date is on or before this date
     """
     return await user_operator.bulk_modify_datalimit(db, bulk_model)
 

@@ -1,12 +1,17 @@
 import asyncio
 import os
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime as dt
+from enum import Enum
 
 import bcrypt
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.models.stats import Period
+from app.utils.helpers import fix_datetime_timezone
 
 from .notification_enable import UserNotificationEnable
-from .validators import DiscordValidator, NumericValidatorMixin, PasswordValidator
+from .validators import DiscordValidator, ListValidator, NumericValidatorMixin, PasswordValidator
 
 BCRYPT_ROUNDS = 12
 _PASSWORD_WORKERS = max(2, min(os.cpu_count() or 1, 8))
@@ -139,6 +144,7 @@ class AdminInDB(AdminDetails):
 
 
 class AdminValidationResult(BaseModel):
+    id: int | None = None
     username: str
     is_sudo: bool
     is_disabled: bool
@@ -166,3 +172,120 @@ class AdminsSimpleResponse(BaseModel):
 
     admins: list[AdminSimple]
     total: int
+
+
+class AdminSortField(str, Enum):
+    username = "username"
+    created_at = "created_at"
+    used_traffic = "used_traffic"
+
+
+class AdminSimpleSortField(str, Enum):
+    id = "id"
+    username = "username"
+
+
+class SortDirection(str, Enum):
+    asc = "asc"
+    desc = "desc"
+
+
+class AdminSortOption(str, Enum):
+    username = "username"
+    created_at = "created_at"
+    used_traffic = "used_traffic"
+    desc_username = "-username"
+    desc_created_at = "-created_at"
+    desc_used_traffic = "-used_traffic"
+
+    @property
+    def field(self) -> AdminSortField:
+        return AdminSortField(self.value.lstrip("-"))
+
+    @property
+    def direction(self) -> SortDirection:
+        return SortDirection.desc if self.value.startswith("-") else SortDirection.asc
+
+
+class AdminSimpleSortOption(str, Enum):
+    id = "id"
+    username = "username"
+    desc_id = "-id"
+    desc_username = "-username"
+
+    @property
+    def field(self) -> AdminSimpleSortField:
+        return AdminSimpleSortField(self.value.lstrip("-"))
+
+    @property
+    def direction(self) -> SortDirection:
+        return SortDirection.desc if self.value.startswith("-") else SortDirection.asc
+
+
+class AdminListQuery(BaseModel):
+    ids: list[int] | None = None
+    usernames: list[str] | None = None
+    username: str | None = None
+    offset: int | None = None
+    limit: int | None = None
+    sort: list[AdminSortOption] = Field(default_factory=list)
+
+    @field_validator("sort", mode="before")
+    @classmethod
+    def validate_sort(cls, value):
+        return ListValidator.normalize_enum_list_input(value, AdminSortOption)
+
+
+class AdminSimpleListQuery(BaseModel):
+    ids: list[int] | None = None
+    usernames: list[str] | None = None
+    search: str | None = None
+    offset: int | None = None
+    limit: int | None = None
+    sort: list[AdminSimpleSortOption] = Field(default_factory=list)
+    all: bool = False
+
+    @field_validator("sort", mode="before")
+    @classmethod
+    def validate_sort(cls, value):
+        return ListValidator.normalize_enum_list_input(value, AdminSimpleSortOption)
+
+
+class AdminUsageQuery(BaseModel):
+    period: Period = Field(default=Period.hour)
+    node_id: int | None = None
+    group_by_node: bool = False
+    start: dt | None = Field(default=None, examples=["2024-01-01T00:00:00+03:30"])
+    end: dt | None = Field(default=None, examples=["2024-01-31T23:59:59+03:30"])
+
+    @field_validator("start", "end", mode="before")
+    @classmethod
+    def validate_datetimes(cls, value):
+        if not value:
+            return value
+        return fix_datetime_timezone(value)
+
+
+class BulkAdminSelection(BaseModel):
+    """Model for bulk admin selection by usernames"""
+
+    usernames: set[str] = Field(default_factory=set)
+
+    @field_validator("usernames", mode="after")
+    @classmethod
+    def usernames_validator(cls, v):
+        return ListValidator.not_null_list(list(v), "admin")
+
+
+class RemoveAdminsResponse(BaseModel):
+    """Response model for bulk admin deletion"""
+
+    admins: list[str]
+    count: int
+
+
+class BulkAdminsActionResponse(BaseModel):
+    """Response model for bulk admin actions."""
+
+    admins: list[str]
+    count: int

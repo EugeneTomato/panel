@@ -1,15 +1,14 @@
 import asyncio
-from enum import Enum
-from typing import List, Optional
+from typing import List
 
-from sqlalchemy import bindparam, select
+from sqlalchemy import bindparam, delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ProxyHost, ProxyInbound
-from app.models.host import CreateHost
+from app.models.host import CreateHost, HostListQuery
 
 
 async def upsert_inbounds(db: AsyncSession, inbound_tags: list[str]) -> dict[str, ProxyInbound]:
@@ -108,23 +107,7 @@ async def remove_inbounds(db: AsyncSession, inbounds: List[ProxyInbound]) -> Non
     await db.commit()
 
 
-ProxyHostSortingOptions = Enum(
-    "ProxyHostSortingOptions",
-    {
-        "priority": ProxyHost.priority.asc(),
-        "id": ProxyHost.id.asc(),
-        "-priority": ProxyHost.priority.desc(),
-        "-id": ProxyHost.id.desc(),
-    },
-)
-
-
-async def get_hosts(
-    db: AsyncSession,
-    offset: Optional[int] = 0,
-    limit: Optional[int] = 0,
-    sort: ProxyHostSortingOptions = ProxyHostSortingOptions.priority,
-) -> list[ProxyHost]:
+async def get_hosts(db: AsyncSession, query: HostListQuery | None = None) -> list[ProxyHost]:
     """
     Retrieves hosts sorted by priority (ascending) by default.
 
@@ -137,12 +120,15 @@ async def get_hosts(
     Returns:
         List[ProxyHost]: List of hosts sorted by the specified option.
     """
-    stmt = select(ProxyHost).order_by(sort.value)
+    query = query or HostListQuery()
+    stmt = select(ProxyHost).order_by(ProxyHost.priority.asc())
 
-    if offset:
-        stmt = stmt.offset(offset)
-    if limit:
-        stmt = stmt.limit(limit)
+    if query.ids:
+        stmt = stmt.where(ProxyHost.id.in_(query.ids))
+    if query.offset:
+        stmt = stmt.offset(query.offset)
+    if query.limit:
+        stmt = stmt.limit(query.limit)
 
     result = await db.execute(stmt)
     return list(result.scalars().all())
@@ -214,3 +200,18 @@ async def remove_host(db: AsyncSession, db_host: ProxyHost) -> ProxyHost:
     await db.delete(db_host)
     await db.commit()
     return db_host
+
+
+async def remove_hosts(db: AsyncSession, host_ids: list[int]) -> None:
+    """
+    Removes multiple hosts from the database by ID.
+
+    Args:
+        db (AsyncSession): Database session.
+        host_ids (list[int]): List of host IDs to remove.
+    """
+    if not host_ids:
+        return
+
+    await db.execute(delete(ProxyHost).where(ProxyHost.id.in_(host_ids)))
+    await db.commit()

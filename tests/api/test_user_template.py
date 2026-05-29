@@ -35,8 +35,48 @@ def test_user_template_create(access_token):
         assert template["expire_duration"] == 3600
         assert template["reset_usages"]
         assert template["status"] == "active"
-        assert template["extra_settings"]["flow"] == ""
-        assert template["extra_settings"]["method"] is None
+        assert template["extra_settings"] is None
+    finally:
+        delete_user_template(access_token, template["id"])
+        cleanup_groups(access_token, core, groups)
+
+
+def test_user_template_hwid_limit_persists_on_create_update_and_clear(access_token):
+    """Test that HWID limits are stored and can be cleared on user templates."""
+    core, groups = setup_groups(access_token, 1)
+    template = create_user_template(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        name=unique_name("test_user_template_hwid"),
+        hwid_limit=2,
+    )
+    try:
+        assert template["hwid_limit"] == 2
+
+        update_payload = {
+            "name": template["name"],
+            "group_ids": [groups[0]["id"]],
+            "data_limit": template["data_limit"],
+            "expire_duration": template["expire_duration"],
+            "status": template["status"],
+            "reset_usages": template["reset_usages"],
+            "hwid_limit": 5,
+        }
+        response = client.put(
+            f"/api/user_template/{template['id']}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=update_payload,
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["hwid_limit"] == 5
+
+        response = client.put(
+            f"/api/user_template/{template['id']}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={**update_payload, "hwid_limit": None},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["hwid_limit"] is None
     finally:
         delete_user_template(access_token, template["id"])
         cleanup_groups(access_token, core, groups)
@@ -80,8 +120,8 @@ def test_user_template_update(access_token):
         assert response.json()["group_ids"] == [group["id"] for group in groups]
         assert response.json()["expire_duration"] == (86400 * 30)
         assert not response.json()["reset_usages"]
-        assert response.json()["extra_settings"]["flow"] == "xtls-rprx-vision"
         assert response.json()["extra_settings"]["method"] == "xchacha20-poly1305"
+        assert "flow" not in response.json()["extra_settings"]
     finally:
         delete_user_template(access_token, template["id"])
         cleanup_groups(access_token, core, groups)

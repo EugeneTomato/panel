@@ -1,23 +1,33 @@
-from enum import Enum
-from sqlalchemy import select, func
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.models import ProxyInbound, Group
-from app.models.group import GroupCreate, GroupModify
+from app.db.models import (
+    Group,
+    ProxyInbound,
+    inbounds_groups_association,
+    template_group_association,
+    users_groups_association,
+)
+from app.models.group import (
+    GroupCreate,
+    GroupListQuery,
+    GroupModify,
+    GroupSimpleListQuery,
+    GroupSimpleSortField,
+    GroupSimpleSortOption,
+)
 
 from .host import upsert_inbounds
 
 
-GroupsSortingOptionsSimple = Enum(
-    "GroupsSortingOptionsSimple",
-    {
-        "id": Group.id.asc(),
-        "-id": Group.id.desc(),
-        "name": Group.name.asc(),
-        "-name": Group.name.desc(),
-    },
-)
+def _build_group_simple_sort_clause(sort_option: GroupSimpleSortOption):
+    field_map = {
+        GroupSimpleSortField.id: Group.id,
+        GroupSimpleSortField.group_name: Group.name,
+    }
+    column = field_map[sort_option.field]
+    return column.desc() if sort_option.value.startswith("-") else column.asc()
 
 
 async def get_inbounds_by_tags(db: AsyncSession, tags: list[str]) -> list[ProxyInbound]:
@@ -82,14 +92,13 @@ async def create_group(db: AsyncSession, group: GroupCreate) -> Group:
     return db_group
 
 
-async def get_group(db: AsyncSession, offset: int = None, limit: int = None) -> tuple[list[Group], int]:
+async def get_group(db: AsyncSession, query: GroupListQuery) -> tuple[list[Group], int]:
     """
     Retrieves a list of groups with optional pagination.
 
     Args:
         db (AsyncSession): The database session.
-        offset (int, optional): The number of records to skip (for pagination).
-        limit (int, optional): The maximum number of records to return.
+        query: Structured group list query.
 
     Returns:
         tuple: A tuple containing:
@@ -97,13 +106,15 @@ async def get_group(db: AsyncSession, offset: int = None, limit: int = None) -> 
             - int: The total count of groups
     """
     groups = select(Group)
+    if query.ids:
+        groups = groups.where(Group.id.in_(query.ids))
 
     count_query = select(func.count()).select_from(groups.subquery())
 
-    if offset:
-        groups = groups.offset(offset)
-    if limit:
-        groups = groups.limit(limit)
+    if query.offset:
+        groups = groups.offset(query.offset)
+    if query.limit:
+        groups = groups.limit(query.limit)
 
     count = (await db.execute(count_query)).scalar_one()
 
@@ -117,50 +128,38 @@ async def get_group(db: AsyncSession, offset: int = None, limit: int = None) -> 
 
 async def get_groups_simple(
     db: AsyncSession,
-    offset: int | None = None,
-    limit: int | None = None,
-    search: str | None = None,
-    sort: list[GroupsSortingOptionsSimple] | None = None,
-    skip_pagination: bool = False,
+    query: GroupSimpleListQuery,
 ) -> tuple[list[tuple[int, str]], int]:
     """
     Retrieves lightweight group data with only id and name.
 
     Args:
         db: Database session.
-        offset: Number of records to skip.
-        limit: Number of records to retrieve.
-        search: Search term for group name.
-        sort: Sort options.
-        skip_pagination: If True, ignore offset/limit and return all records (max 1,000).
+        query: Structured lightweight group query.
 
     Returns:
         Tuple of (list of (id, name) tuples, total_count).
     """
     stmt = select(Group.id, Group.name)
 
-    if search:
-        stmt = stmt.where(Group.name.ilike(f"%{search}%"))
+    if query.ids:
+        stmt = stmt.where(Group.id.in_(query.ids))
+    if query.search:
+        stmt = stmt.where(Group.name.ilike(f"%{query.search}%"))
 
-    if sort:
-        sort_list = []
-        for s in sort:
-            if isinstance(s.value, tuple):
-                sort_list.extend(s.value)
-            else:
-                sort_list.append(s.value)
-        stmt = stmt.order_by(*sort_list)
+    if query.sort:
+        stmt = stmt.order_by(*[_build_group_simple_sort_clause(sort_option) for sort_option in query.sort])
 
     # Get count BEFORE pagination (always)
     count_stmt = select(func.count()).select_from(stmt.subquery())
     total = (await db.execute(count_stmt)).scalar()
 
     # Apply pagination or safety limit
-    if not skip_pagination:
-        if offset:
-            stmt = stmt.offset(offset)
-        if limit:
-            stmt = stmt.limit(limit)
+    if not query.all:
+        if query.offset:
+            stmt = stmt.offset(query.offset)
+        if query.limit:
+            stmt = stmt.limit(query.limit)
     else:
         stmt = stmt.limit(10000)  # Safety limit when all=true
 
@@ -243,4 +242,22 @@ async def remove_group(db: AsyncSession, dbgroup: Group):
         dbgroup (Group): The Group object to be removed.
     """
     await db.delete(dbgroup)
+    await db.commit()
+
+
+async def remove_groups(db: AsyncSession, group_ids: list[int]) -> None:
+    """
+    Removes multiple groups from the database by ID.
+
+    Args:
+        db (AsyncSession): Database session.
+        group_ids (list[int]): List of group IDs to remove.
+    """
+    if not group_ids:
+        return
+
+    await db.execute(delete(users_groups_association).where(users_groups_association.c.groups_id.in_(group_ids)))
+    await db.execute(delete(template_group_association).where(template_group_association.c.group_id.in_(group_ids)))
+    await db.execute(delete(inbounds_groups_association).where(inbounds_groups_association.c.group_id.in_(group_ids)))
+    await db.execute(delete(Group).where(Group.id.in_(group_ids)))
     await db.commit()

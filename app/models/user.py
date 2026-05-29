@@ -1,11 +1,13 @@
 from datetime import datetime as dt
 from enum import Enum
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.db.models import DataLimitResetStrategy, UserStatus, UserStatusCreate
+from app.db.models import DataLimitResetStrategy, UserStatus
 from app.models.admin import AdminBase, AdminContactInfo
-from app.models.proxy import ProxyTable, ShadowsocksMethods, XTLSFlows
+from app.models.proxy import ProxyTable, ShadowsocksMethods
+from app.models.stats import Period
 from app.utils.helpers import fix_datetime_timezone
 
 from .validators import ListValidator, NumericValidatorMixin, UserValidator
@@ -35,6 +37,7 @@ class User(BaseModel):
     on_hold_timeout: dt | int | None = Field(default=None)
     group_ids: list[int] | None = Field(default_factory=list)
     auto_delete_in_days: int | None = Field(default=None)
+    hwid_limit: int | None = Field(default=None)
     next_plan: NextPlanModel | None = Field(default=None)
 
 
@@ -59,19 +62,19 @@ class UserWithValidator(User):
             return value
         return fix_datetime_timezone(value)
 
-    @field_validator("status", mode="before", check_fields=False)
-    def validate_status(cls, status, values):
-        return UserValidator.validate_status(status, values)
-
 
 class UserCreate(UserWithValidator):
     username: str
-    status: UserStatusCreate | None = Field(default=None)
+    status: UserStatus | None = Field(default=None)
 
     @field_validator("username", check_fields=False)
     @classmethod
     def validate_username(cls, v):
         return UserValidator.validate_username(v)
+
+    @field_validator("status", mode="before", check_fields=False)
+    def validate_status(cls, status, values):
+        return UserValidator.validate_status(status, {UserStatus.active, UserStatus.on_hold}, values)
 
     @field_validator("group_ids", mode="after")
     @classmethod
@@ -80,8 +83,14 @@ class UserCreate(UserWithValidator):
 
 
 class UserModify(UserWithValidator):
-    status: UserStatusModify | None = Field(default=None)
+    status: UserStatus | None = Field(default=None)
     proxy_settings: ProxyTable | None = Field(default=None)
+
+    @field_validator("status", mode="before", check_fields=False)
+    def validate_status(cls, status, values):
+        return UserValidator.validate_status(
+            status, {UserStatus.active, UserStatus.on_hold, UserStatus.disabled}, values
+        )
 
     @field_validator("group_ids", mode="after")
     @classmethod
@@ -126,6 +135,7 @@ class SubscriptionUserResponse(UserResponse):
     note: str | None = Field(None, exclude=True)
     auto_delete_in_days: int | None = Field(None, exclude=True)
     subscription_url: str | None = Field(None, exclude=True)
+    ip: str | None = Field(default=None)
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -155,9 +165,161 @@ class UsersSimpleResponse(BaseModel):
     total: int
 
 
+class UserSortField(str, Enum):
+    username = "username"
+    used_traffic = "used_traffic"
+    data_limit = "data_limit"
+    expire = "expire"
+    created_at = "created_at"
+    edit_at = "edit_at"
+    online_at = "online_at"
+
+
+class UserSimpleSortField(str, Enum):
+    id = "id"
+    username = "username"
+
+
+class SortDirection(str, Enum):
+    asc = "asc"
+    desc = "desc"
+
+
+class UserSortOption(str, Enum):
+    username = "username"
+    used_traffic = "used_traffic"
+    data_limit = "data_limit"
+    expire = "expire"
+    created_at = "created_at"
+    edit_at = "edit_at"
+    online_at = "online_at"
+    desc_username = "-username"
+    desc_used_traffic = "-used_traffic"
+    desc_data_limit = "-data_limit"
+    desc_expire = "-expire"
+    desc_created_at = "-created_at"
+    desc_edit_at = "-edit_at"
+    desc_online_at = "-online_at"
+
+    @property
+    def field(self) -> UserSortField:
+        return UserSortField(self.value.lstrip("-"))
+
+    @property
+    def direction(self) -> SortDirection:
+        return SortDirection.desc if self.value.startswith("-") else SortDirection.asc
+
+
+class UserSimpleSortOption(str, Enum):
+    id = "id"
+    username = "username"
+    desc_id = "-id"
+    desc_username = "-username"
+
+    @property
+    def field(self) -> UserSimpleSortField:
+        return UserSimpleSortField(self.value.lstrip("-"))
+
+    @property
+    def direction(self) -> SortDirection:
+        return SortDirection.desc if self.value.startswith("-") else SortDirection.asc
+
+
+class UserListQuery(BaseModel):
+    offset: int | None = Field(default=None)
+    limit: int | None = Field(default=None)
+    ids: list[int] | None = Field(default=None)
+    username: list[str] | None = Field(default=None)
+    usernames: list[str] | None = Field(default=None)
+    owner: list[str] | None = Field(default=None, alias="admin")
+    admin_ids: list[int] | None = Field(default=None, validation_alias=AliasChoices("admin_ids", "admin_id"))
+    group_ids: list[int] | None = Field(default=None, alias="group")
+    search: str | None = Field(default=None)
+    status: UserStatus | list[UserStatus] | None = Field(default=None)
+    sort: list[UserSortOption] = Field(default_factory=list)
+    proxy_id: str | None = Field(default=None)
+    data_limit_reset_strategy: DataLimitResetStrategy | list[DataLimitResetStrategy] | None = Field(
+        default=None, validation_alias=AliasChoices("data_limit_reset_strategy", "reset_strategy")
+    )
+    data_limit_min: int | None = Field(default=None, ge=0)
+    data_limit_max: int | None = Field(default=None, ge=0)
+    expire_after: dt | None = Field(default=None, examples=["2026-01-01T00:00:00+03:30"])
+    expire_before: dt | None = Field(default=None, examples=["2026-01-31T23:59:59+03:30"])
+    online_after: dt | None = Field(default=None, examples=["2026-01-01T00:00:00+03:30"])
+    online_before: dt | None = Field(default=None, examples=["2026-01-31T23:59:59+03:30"])
+    online: bool = Field(default=False)
+    no_data_limit: bool = Field(default=False)
+    no_expire: bool = Field(default=False)
+    load_sub: bool = Field(default=False)
+    model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("expire_after", "expire_before", "online_after", "online_before", mode="before")
+    @classmethod
+    def validate_datetimes(cls, value):
+        if not value:
+            return value
+        return fix_datetime_timezone(value)
+
+    @field_validator("sort", mode="before")
+    @classmethod
+    def validate_sort(cls, value):
+        return ListValidator.normalize_enum_list_input(value, UserSortOption)
+
+
+class UserSimpleListQuery(BaseModel):
+    ids: list[int] | None = Field(default=None)
+    usernames: list[str] | None = Field(default=None)
+    offset: int | None = Field(default=None)
+    limit: int | None = Field(default=None)
+    search: str | None = Field(default=None)
+    sort: list[UserSimpleSortOption] = Field(default_factory=list)
+    all: bool = Field(default=False)
+
+    @field_validator("sort", mode="before")
+    @classmethod
+    def validate_sort(cls, value):
+        return ListValidator.normalize_enum_list_input(value, UserSimpleSortOption)
+
+
+class UserUsageQuery(BaseModel):
+    period: Period = Field(default=Period.hour)
+    node_id: int | None = Field(default=None)
+    group_by_node: bool = Field(default=False)
+    start: dt | None = Field(default=None, examples=["2024-01-01T00:00:00+03:30"])
+    end: dt | None = Field(default=None, examples=["2024-01-31T23:59:59+03:30"])
+
+    @field_validator("start", "end", mode="before")
+    @classmethod
+    def validate_datetimes(cls, value):
+        if not value:
+            return value
+        return fix_datetime_timezone(value)
+
+
+class UsersUsageQuery(UserUsageQuery):
+    owner: list[str] | None = Field(default=None, alias="admin")
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ExpiredUsersQuery(BaseModel):
+    admin_username: str | None = Field(default=None)
+    target: Literal["expired", "limited"] = Field(default="expired")
+    expired_after: dt | None = Field(default=None, examples=["2024-01-01T00:00:00+03:30"])
+    expired_before: dt | None = Field(default=None, examples=["2024-01-31T23:59:59+03:30"])
+
+    @field_validator("expired_after", "expired_before", mode="before")
+    @classmethod
+    def validate_datetimes(cls, value):
+        if not value:
+            return value
+        return fix_datetime_timezone(value)
+
+
 class UserSubscriptionUpdateSchema(BaseModel):
     created_at: dt
     user_agent: str
+    ip: str | None = Field(default=None)
+    hwid: str | None = Field(default=None)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -185,14 +347,57 @@ class UserSubscriptionUpdateChart(BaseModel):
     segments: list[UserSubscriptionUpdateChartSegment] = Field(default_factory=list)
 
 
+class UserHWIDResponse(BaseModel):
+    id: int
+    hwid: str
+    device_os: str | None = None
+    os_version: str | None = None
+    device_model: str | None = None
+    created_at: dt
+    last_used_at: dt
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserHWIDListResponse(BaseModel):
+    hwids: list[UserHWIDResponse]
+    count: int
+
+
 class RemoveUsersResponse(BaseModel):
     users: list[str]
     count: int
 
 
+class BulkUsersActionResponse(BaseModel):
+    users: list[str]
+    count: int
+
+
+class BulkUsersSelection(BaseModel):
+    ids: set[int] = Field(default_factory=set)
+
+    @field_validator("ids", mode="after")
+    @classmethod
+    def ids_validator(cls, v):
+        return ListValidator.not_null_list(v, "user")
+
+
+class BulkUsersSetOwner(BulkUsersSelection):
+    admin_username: str
+
+    @field_validator("admin_username", check_fields=False)
+    @classmethod
+    def validate_admin_username(cls, v):
+        return UserValidator.validate_username(v)
+
+
 class ModifyUserByTemplate(BaseModel):
     user_template_id: int
     note: str | None = Field(max_length=500, default=None)
+
+
+class BulkUsersApplyTemplate(BulkUsersSelection, ModifyUserByTemplate):
+    """Apply a user template to a selection of existing users (by ID)."""
 
 
 class CreateUserFromTemplate(ModifyUserByTemplate):
@@ -204,17 +409,16 @@ class CreateUserFromTemplate(ModifyUserByTemplate):
         return UserValidator.validate_username(v)
 
 
-class BulkUser(BaseModel):
-    amount: int
+class BulkUserFilter(BaseModel):
     dry_run: bool = False
     group_ids: set[int] = Field(default_factory=set)
     admins: set[int] = Field(default_factory=set)
     users: set[int] = Field(default_factory=set)
     status: set[UserStatus] = Field(default_factory=set)
-    expired_after: dt | None = Field(default=None)
-    expired_before: dt | None = Field(default=None)
+    expire_after: dt | None = Field(default=None, validation_alias=AliasChoices("expire_after", "expired_after"))
+    expire_before: dt | None = Field(default=None, validation_alias=AliasChoices("expire_before", "expired_before"))
 
-    @field_validator("expired_after", "expired_before", check_fields=False)
+    @field_validator("expire_after", "expire_before", check_fields=False)
     @classmethod
     def validator_datetime(cls, value):
         if not value:
@@ -222,25 +426,19 @@ class BulkUser(BaseModel):
         return fix_datetime_timezone(value)
 
 
-class BulkUsersProxy(BaseModel):
-    flow: XTLSFlows | None = Field(default=None)
+class BulkUser(BulkUserFilter):
+    amount: int
+
+
+class BulkUsersProxy(BulkUserFilter):
     method: ShadowsocksMethods | None = Field(default=None)
-    dry_run: bool = False
-    group_ids: set[int] = Field(default_factory=set)
-    admins: set[int] = Field(default_factory=set)
-    users: set[int] = Field(default_factory=set)
 
 
-class BulkWireGuardPeerIPs(BaseModel):
+class BulkWireGuardPeerIPs(BulkUserFilter):
     """Re-seat WireGuard peer IPs (same scoping as BulkUser: users, admins, group_ids, status)."""
 
     confirm: bool = False
-    dry_run: bool = False
     replace_all: bool = False
-    group_ids: set[int] = Field(default_factory=set)
-    admins: set[int] = Field(default_factory=set)
-    users: set[int] = Field(default_factory=set)
-    status: set[UserStatus] = Field(default_factory=set)
 
 
 class BulkOperationDryRunResponse(BaseModel):

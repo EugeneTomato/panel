@@ -4,7 +4,6 @@ from aiorwlock import RWLock
 from PasarGuardNodeBridge import Health, NodeType, PasarGuardNode, create_node
 from PasarGuardNodeBridge.common.service_pb2 import User as ProtoUser
 
-
 from app.db.models import Node, NodeConnectionType
 from app.node.user import core_users
 from app.utils.logger import get_logger
@@ -13,19 +12,6 @@ type_map = {
     NodeConnectionType.rest: NodeType.rest,
     NodeConnectionType.grpc: NodeType.grpc,
 }
-
-
-def calculate_max_message_size(active_users_count: int) -> int:
-    """
-    max_message_size to 64MB.
-
-    Args:
-        active_users_count: Number of active users in the system
-
-    Returns:
-        int: Max message size in bytes (64MB)
-    """
-    return 64 * 1024 * 1024  # 64MB
 
 
 class NodeManager:
@@ -44,7 +30,7 @@ class NodeManager:
         except Exception:
             pass
 
-    async def update_node(self, node: Node, max_message_size: int | None = None) -> PasarGuardNode:
+    async def update_node(self, node: Node) -> PasarGuardNode:
         async with self._lock.writer_lock:
             old_node: PasarGuardNode | None = self._nodes.pop(node.id, None)
 
@@ -59,7 +45,7 @@ class NodeManager:
                 logger=self.logger,
                 default_timeout=node.default_timeout,
                 internal_timeout=node.internal_timeout,
-                max_message_size=max_message_size,
+                proxy=node.proxy_url,
                 extra={"id": node.id, "usage_coefficient": node.usage_coefficient},
             )
 
@@ -137,4 +123,4 @@ class NodeManager:
 node_manager: NodeManager = NodeManager()
 
 
-__all__ = ["calculate_max_message_size", "core_users", "node_manager"]
+__all__ = ["core_users", "node_manager"]

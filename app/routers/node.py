@@ -1,8 +1,7 @@
 import asyncio
-from datetime import datetime as dt
-from typing import AsyncGenerator
+from typing import Annotated, AsyncGenerator
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from PasarGuardNodeBridge import NodeAPIError
 from sse_starlette.sse import EventSourceResponse
 
@@ -10,28 +9,53 @@ from app.db import AsyncSession, get_db
 from app.db.models import NodeStatus
 from app.models.admin import AdminDetails
 from app.models.node import (
+    BulkNodesActionResponse,
+    BulkNodeSelection,
+    NodeClearUsageQuery,
     NodeCoreUpdate,
     NodeCreate,
     NodeGeoFilesUpdate,
+    NodeListQuery,
     NodeModify,
     NodeResponse,
     NodeSettings,
+    NodeSimpleListQuery,
     NodesResponse,
     NodesSimpleResponse,
+    NodeStatsPeriodQuery,
+    NodeUsageQuery,
+    RemoveNodesResponse,
     UsageTable,
     UserIPList,
     UserIPListAll,
 )
-from app.models.stats import NodeRealtimeStats, NodeStatsList, NodeUsageStatsList, Period
+from app.models.stats import (
+    NodeOutboundsLatencyResponse,
+    NodeRealtimeStats,
+    NodeStatsList,
+    NodeUsageStatsList,
+    UserCountMetric,
+    UserCountMetricStatsList,
+    validate_user_count_metric_scope,
+)
+from app.nats.node_rpc import node_nats_client
 from app.operation import OperatorType
 from app.operation.node import NodeOperation
 from app.utils import responses
-from app.nats.node_rpc import node_nats_client
-from config import ROLE
+from app.utils.logger import get_logger
+from config import runtime_settings
 
 from .authentication import check_sudo_admin
+from .dependencies import (
+    get_node_clear_usage_query,
+    get_node_list_query,
+    get_node_simple_list_query,
+    get_node_stats_period_query,
+    get_node_usage_query,
+)
 
 node_operator = NodeOperation(operator_type=OperatorType.API)
+logger = get_logger("node-router")
 router = APIRouter(tags=["Node"], prefix="/api/node", responses={401: responses._401, 403: responses._403})
 
 
@@ -53,8 +77,8 @@ async def _node_logs_local(node_id: int, request: Request) -> EventSourceRespons
                     yield f"{item}"
         except asyncio.CancelledError:
             pass
-        except Exception as e:
-            yield f"Error retrieving logs: {str(e)}\n"
+        except Exception:
+            logger.exception("Failed to stream local node logs", extra={"node_id": node_id})
 
     return EventSourceResponse(event_generator())
 
@@ -88,8 +112,8 @@ async def _node_logs_remote(node_id: int, request: Request) -> EventSourceRespon
                 yield msg.data.decode()
         except asyncio.CancelledError:
             pass
-        except Exception as e:
-            yield f"Error retrieving logs: {str(e)}\n"
+        except Exception:
+            logger.exception("Failed to stream remote node logs", extra={"node_id": node_id})
         finally:
             if stop_subject:
                 try:
@@ -105,7 +129,7 @@ async def _node_logs_remote(node_id: int, request: Request) -> EventSourceRespon
     return EventSourceResponse(event_generator())
 
 
-_node_logs_handler = _node_logs_local if ROLE.runs_node else _node_logs_remote
+_node_logs_handler = _node_logs_local if runtime_settings.role.runs_node else _node_logs_remote
 
 
 @router.get("/settings", response_model=NodeSettings)
@@ -116,44 +140,39 @@ async def get_node_settings(_: AdminDetails = Depends(check_sudo_admin)):
 
 @router.get("/usage", response_model=NodeUsageStatsList)
 async def get_usage(
+    query: Annotated[NodeUsageQuery, Depends(get_node_usage_query)],
     db: AsyncSession = Depends(get_db),
-    start: dt | None = Query(None, examples=["2024-01-01T00:00:00+03:30"]),
-    end: dt | None = Query(None, examples=["2024-01-31T23:59:59+03:30"]),
-    period: Period = Period.hour,
-    node_id: int | None = None,
-    group_by_node: bool = False,
     _: AdminDetails = Depends(check_sudo_admin),
 ):
     """Retrieve usage statistics for nodes within a specified date range."""
-    return await node_operator.get_usage(
-        db=db, start=start, end=end, period=period, node_id=node_id, group_by_node=group_by_node
-    )
+    return await node_operator.get_usage(db=db, query=query)
+
+
+@router.get("/user_counts/{metric}", response_model=UserCountMetricStatsList)
+async def get_user_count_metric(
+    metric: UserCountMetric,
+    query: Annotated[NodeUsageQuery, Depends(get_node_usage_query)],
+    db: AsyncSession = Depends(get_db),
+    _: AdminDetails = Depends(check_sudo_admin),
+):
+    """Retrieve one user activity/status count metric from node user usage rows."""
+    try:
+        validate_user_count_metric_scope(metric, node_id=query.node_id, group_by_node=query.group_by_node)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return await node_operator.get_user_count_metric(db=db, metric=metric, query=query)
 
 
 @router.get("s", response_model=NodesResponse)
 async def get_nodes(
-    core_id: int | None = None,
-    offset: int | None = None,
-    limit: int | None = None,
-    status: list[NodeStatus] | None = Query(None),
-    enabled: bool = False,
-    ids: list[int] | None = Query(None),
-    search: str | None = None,
+    query: Annotated[NodeListQuery, Depends(get_node_list_query)],
     db: AsyncSession = Depends(get_db),
     _: AdminDetails = Depends(check_sudo_admin),
 ):
     """Retrieve a list of all nodes. Accessible only to sudo admins."""
 
-    return await node_operator.get_db_nodes(
-        db=db,
-        core_id=core_id,
-        offset=offset,
-        limit=limit,
-        status=status,
-        enabled=enabled,
-        ids=ids,
-        search=search,
-    )
+    return await node_operator.get_db_nodes(db=db, query=query)
 
 
 @router.get(
@@ -163,23 +182,12 @@ async def get_nodes(
     description="Returns only id and name for nodes. Optimized for dropdowns and autocomplete.",
 )
 async def get_nodes_simple(
-    offset: int | None = None,
-    limit: int | None = None,
-    search: str | None = None,
-    sort: str | None = None,
-    all: bool = False,
+    query: Annotated[NodeSimpleListQuery, Depends(get_node_simple_list_query)],
     db: AsyncSession = Depends(get_db),
     _: AdminDetails = Depends(check_sudo_admin),
 ):
     """Get lightweight node list with only id and name"""
-    return await node_operator.get_nodes_simple(
-        db=db,
-        offset=offset,
-        limit=limit,
-        search=search,
-        sort=sort,
-        all=all,
-    )
+    return await node_operator.get_nodes_simple(db=db, query=query)
 
 
 @router.post("s/reconnect")
@@ -301,19 +309,28 @@ async def node_logs(node_id: int, request: Request, _: AdminDetails = Depends(ch
 @router.get("/{node_id}/stats", response_model=NodeStatsList)
 async def get_node_stats_periodic(
     node_id: int,
-    start: dt | None = Query(None, examples=["2024-01-01T00:00:00+03:30"]),
-    end: dt | None = Query(None, examples=["2024-01-31T23:59:59+03:30"]),
-    period: Period = Period.hour,
+    query: Annotated[NodeStatsPeriodQuery, Depends(get_node_stats_period_query)],
     db: AsyncSession = Depends(get_db),
     _: AdminDetails = Depends(check_sudo_admin),
 ):
-    return await node_operator.get_node_stats_periodic(db, node_id=node_id, start=start, end=end, period=period)
+    return await node_operator.get_node_stats_periodic(db, node_id=node_id, query=query)
 
 
 @router.get("/{node_id}/realtime_stats", response_model=NodeRealtimeStats)
 async def realtime_node_stats(node_id: int, _: AdminDetails = Depends(check_sudo_admin)):
     """Retrieve node real-time statistics."""
     return await node_operator.get_node_system_stats(node_id=node_id)
+
+
+@router.get("/{node_id}/outbounds_latency", response_model=NodeOutboundsLatencyResponse)
+async def node_outbounds_latency(
+    node_id: int,
+    name: str = "",
+    timeout: int | None = None,
+    _: AdminDetails = Depends(check_sudo_admin),
+):
+    """Retrieve outbound latency for one outbound or all outbounds of a node."""
+    return await node_operator.get_outbounds_latency(node_id=node_id, name=name, timeout=timeout)
 
 
 @router.get("s/realtime_stats", response_model=dict[int, NodeRealtimeStats | None])
@@ -352,8 +369,7 @@ async def user_online_ip_list(
 )
 async def clear_usage_data(
     table: UsageTable,
-    start: dt | None = Query(None),
-    end: dt | None = Query(None),
+    query: Annotated[NodeClearUsageQuery, Depends(get_node_clear_usage_query)],
     db: AsyncSession = Depends(get_db),
     _: AdminDetails = Depends(check_sudo_admin),
 ):
@@ -370,4 +386,88 @@ async def clear_usage_data(
 
     ⚠️ This operation is irreversible. Ensure correct usage in production environments.
     """
-    return await node_operator.clear_usage_data(db, table, start, end)
+    return await node_operator.clear_usage_data(db, table, query)
+
+
+@router.post(
+    "s/bulk/delete",
+    response_model=RemoveNodesResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_delete_nodes(
+    bulk_nodes: BulkNodeSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(check_sudo_admin),
+):
+    """Delete selected nodes by ID."""
+    return await node_operator.bulk_remove_nodes(db, bulk_nodes, admin)
+
+
+@router.post(
+    "s/bulk/disable",
+    response_model=BulkNodesActionResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_disable_nodes(
+    bulk_nodes: BulkNodeSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(check_sudo_admin),
+):
+    """Disable selected nodes by ID."""
+    return await node_operator.bulk_set_nodes_status(db, bulk_nodes, admin, status=NodeStatus.disabled)
+
+
+@router.post(
+    "s/bulk/enable",
+    response_model=BulkNodesActionResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_enable_nodes(
+    bulk_nodes: BulkNodeSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(check_sudo_admin),
+):
+    """Enable selected nodes by ID."""
+    return await node_operator.bulk_set_nodes_status(db, bulk_nodes, admin, status=NodeStatus.connected)
+
+
+@router.post(
+    "s/bulk/reset",
+    response_model=BulkNodesActionResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_reset_nodes_usage(
+    bulk_nodes: BulkNodeSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(check_sudo_admin),
+):
+    """Reset usage for selected nodes by ID."""
+    return await node_operator.bulk_reset_nodes_usage(db, bulk_nodes, admin)
+
+
+@router.post(
+    "s/bulk/reconnect",
+    response_model=BulkNodesActionResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_reconnect_nodes(
+    bulk_nodes: BulkNodeSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(check_sudo_admin),
+):
+    """Reconnect selected nodes by ID."""
+    return await node_operator.bulk_restart_nodes(db, bulk_nodes, admin)
+
+
+@router.post(
+    "s/bulk/update",
+    response_model=BulkNodesActionResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_update_nodes(
+    bulk_nodes: BulkNodeSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(check_sudo_admin),
+):
+    """Update selected nodes by ID."""
+    return await node_operator.bulk_update_nodes(db, bulk_nodes, admin)

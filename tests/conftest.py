@@ -9,12 +9,14 @@ from pydantic import PydanticDeprecatedSince20
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, project_root)
 
-# Override the config module for tests
-import config  # noqa
+# Override settings for tests
+from config import auth_settings, runtime_settings, server_settings  # noqa: E402
 
-config.TESTING = True
-config.DEBUG = True
-config.SUDOERS["testadmin"] = "testadmin"
+runtime_settings.testing = True
+runtime_settings.debug = True
+server_settings.proxy_headers = True
+server_settings.forwarded_allow_ips = "*"
+auth_settings.sudoers["testadmin"] = "testadmin"
 
 
 # Filter out all warnings

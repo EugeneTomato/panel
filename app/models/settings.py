@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.models.proxy import ShadowsocksMethods, XTLSFlows
+from app.models.proxy import ShadowsocksMethods
 
 from .notification_enable import NotificationEnable
 from .validators import DiscordValidator, ProxyValidator, URLValidator
@@ -216,7 +216,7 @@ class SubFormatEnable(BaseModel):
 class Platform(StrEnum):
     ANDROID = "android"
     IOS = "ios"
-    WIINDOWS = "windows"
+    WINDOWS = "windows"
     MACOS = "macos"
     LINUX = "linux"
     APPLETV = "appletv"
@@ -262,6 +262,7 @@ class Subscription(BaseModel):
     # only supported by v2RayTun and Happ apps
     announce: str = Field(default="", max_length=128)
     announce_url: str = Field(default="")
+    response_headers: dict[str, Any] = Field(default_factory=dict)
     # Rules To Seperate Clients And Send Config As Needed
     rules: list[SubRule]
     manual_sub_request: SubFormatEnable = Field(default_factory=SubFormatEnable)
@@ -285,8 +286,15 @@ class Subscription(BaseModel):
         return v
 
 
+class HWIDSettings(BaseModel):
+    enabled: bool = Field(default=False)
+    forced: bool = Field(default=False)
+    fallback_limit: int = Field(default=0, ge=0)
+    min_limit: int = Field(default=0, ge=0)
+    max_limit: int = Field(default=0, ge=0)
+
+
 class General(BaseModel):
-    default_flow: XTLSFlows = Field(default=XTLSFlows.NONE)
     default_method: ShadowsocksMethods = Field(default=ShadowsocksMethods.CHACHA20_POLY1305)
 
 
@@ -297,6 +305,7 @@ class SettingsSchema(BaseModel):
     notification_settings: NotificationSettings | None = Field(default=None)
     notification_enable: NotificationEnable | None = Field(default=None)
     subscription: Subscription | None = Field(default=None)
+    hwid: HWIDSettings | None = Field(default=None)
     general: General | None = Field(default=None)
 
     model_config = ConfigDict(from_attributes=True)

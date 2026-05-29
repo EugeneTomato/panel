@@ -21,19 +21,14 @@ from app.db.base import engine
 from app.db.models import Admin, Node, NodeUsage, NodeUserUsage, System, User
 from app.node import node_manager
 from app.utils.logger import get_logger
-from config import (
-    DISABLE_RECORDING_NODE_USAGE,
-    ROLE,
-    JOB_RECORD_NODE_USAGES_INTERVAL,
-    JOB_RECORD_USER_USAGES_INTERVAL,
-)
+from config import job_settings, runtime_settings, usage_settings
 
 logger = get_logger("record-usages")
 
 # Hard-limit concurrency: Prevent DB lock storms
 # Start with 2-4, adjust based on DB performance
 JOB_SEM = asyncio.Semaphore(3)  # Max 3 concurrent DB write operations
-
+API_SEM = asyncio.Semaphore(10)  # Max 10
 
 # Thread pool executor for I/O-bound node API calls
 # Distributes workload across threads/cores for data collection
@@ -439,7 +434,7 @@ def _process_users_stats_response(stats_response):
         try:
             uid_int = int(uid)
             validated_params.append({"uid": uid_int, "value": value})
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             # Collect invalid UIDs to log outside thread
             invalid_uids.append(uid)
             continue
@@ -452,30 +447,30 @@ async def get_users_stats(node: PasarGuardNode):
     Get user stats from node using thread pool for CPU-bound processing.
     This distributes the heavy data processing workload across cores.
     """
-    async with JOB_SEM:
-        try:
-            # I/O operation: fetch stats from node (async, non-blocking)
+    try:
+        # I/O operation: fetch stats from node (async, non-blocking)
+        async with API_SEM:
             stats_response = await node.get_stats(stat_type=StatType.UsersStat, reset=True, timeout=30)
 
-            # CPU-bound operation: process stats in thread pool to utilize multiple cores
-            loop = asyncio.get_running_loop()
-            thread_pool = await _get_thread_pool()
-            validated_params, invalid_uids = await loop.run_in_executor(
-                thread_pool, _process_users_stats_response, stats_response
-            )
+        # CPU-bound operation: process stats in thread pool to utilize multiple cores
+        loop = asyncio.get_running_loop()
+        thread_pool = await _get_thread_pool()
+        validated_params, invalid_uids = await loop.run_in_executor(
+            thread_pool, _process_users_stats_response, stats_response
+        )
 
-            # Log invalid UIDs outside of thread (thread-safe logging)
-            if invalid_uids:
-                for uid in invalid_uids:
-                    logger.warning("Skipping invalid UID: %s", uid)
+        # Log invalid UIDs outside of thread (thread-safe logging)
+        if invalid_uids:
+            for uid in invalid_uids:
+                logger.warning("Skipping invalid UID: %s", uid)
 
-            return validated_params
-        except NodeAPIError as e:
-            logger.error("Failed to get users stats, error: %s", e.detail)
-            return []
-        except Exception as e:
-            logger.error("Failed to get users stats, unknown error: %s", e)
-            return []
+        return validated_params
+    except NodeAPIError as e:
+        logger.error("Failed to get users stats, error: %s", e.detail)
+        return []
+    except Exception as e:
+        logger.error("Failed to get users stats, unknown error: %s", e)
+        return []
 
 
 def _process_outbounds_stats_response(stats_response):
@@ -495,23 +490,23 @@ async def get_outbounds_stats(node: PasarGuardNode):
     Get outbounds stats from node using thread pool for CPU-bound processing.
     This distributes the heavy data processing workload across cores.
     """
-    async with JOB_SEM:
-        try:
-            # I/O operation: fetch stats from node (async, non-blocking)
+    try:
+        # I/O operation: fetch stats from node (async, non-blocking)
+        async with API_SEM:
             stats_response = await node.get_stats(stat_type=StatType.Outbounds, reset=True, timeout=10)
 
-            # CPU-bound operation: process stats in thread pool to utilize multiple cores
-            loop = asyncio.get_running_loop()
-            thread_pool = await _get_thread_pool()
-            params = await loop.run_in_executor(thread_pool, _process_outbounds_stats_response, stats_response)
+        # CPU-bound operation: process stats in thread pool to utilize multiple cores
+        loop = asyncio.get_running_loop()
+        thread_pool = await _get_thread_pool()
+        params = await loop.run_in_executor(thread_pool, _process_outbounds_stats_response, stats_response)
 
-            return params
-        except NodeAPIError as e:
-            logger.error("Failed to get outbounds stats, error: %s", e.detail)
-            return []
-        except Exception as e:
-            logger.error("Failed to get outbounds stats, unknown error: %s", e)
-            return []
+        return params
+    except NodeAPIError as e:
+        logger.error("Failed to get outbounds stats, error: %s", e.detail)
+        return []
+    except Exception as e:
+        logger.error("Failed to get outbounds stats, unknown error: %s", e)
+        return []
 
 
 async def calculate_admin_usage(users_usage: list) -> tuple[dict, set[int]]:
@@ -678,7 +673,7 @@ async def _record_user_usages_impl():
                 await safe_execute(admin_stmt, admin_data)
             logger.debug(f"Updated {len(admin_data)} admins")
 
-        if DISABLE_RECORDING_NODE_USAGE:
+        if usage_settings.disable_recording_node_usage:
             return
 
         # Batch all node user usage writes into single operation
@@ -788,7 +783,7 @@ async def _record_node_usages_impl():
         async with JOB_SEM:
             await safe_execute(system_update_stmt)
 
-        if DISABLE_RECORDING_NODE_USAGE:
+        if usage_settings.disable_recording_node_usage:
             return
 
         # Batch all node usage writes
@@ -819,11 +814,11 @@ async def record_node_usages():
         logger.warning("record_node_usages was cancelled")
 
 
-if ROLE.runs_node:
+if runtime_settings.role.runs_node:
     scheduler.add_job(
         record_user_usages,
         "interval",
-        seconds=JOB_RECORD_USER_USAGES_INTERVAL,
+        seconds=job_settings.record_user_usages_interval,
         start_date=dt.now(tz.utc) + td(seconds=30),
         id="record_user_usages",
     )
@@ -831,7 +826,7 @@ if ROLE.runs_node:
     scheduler.add_job(
         record_node_usages,
         "interval",
-        seconds=JOB_RECORD_NODE_USAGES_INTERVAL,
+        seconds=job_settings.record_node_usages_interval,
         start_date=dt.now(tz.utc) + td(seconds=15),
         id="record_node_usages",
     )

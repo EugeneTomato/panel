@@ -1,5 +1,4 @@
 import re
-from datetime import datetime as dt
 from json import dumps as json_dumps
 from typing import Any
 
@@ -7,15 +6,22 @@ from fastapi import Response
 from fastapi.responses import HTMLResponse
 
 from app.db import AsyncSession
+from app.db.crud.hwid import (
+    get_user_hwid_by_value,
+    get_user_hwid_count,
+    register_user_hwid,
+)
 from app.db.crud.user import get_user_usages, user_sub_update
 from app.db.models import User
-from app.models.settings import Application, ConfigFormat, SubRule, Subscription as SubSettings
-from app.models.stats import Period, UserUsageStatsList
+from app.models.admin import AdminDetails
+from app.models.settings import Application, ConfigFormat, HWIDSettings, SubRule, Subscription as SubSettings
+from app.models.stats import UserUsageStatsList
+from app.models.subscription import SubscriptionUsageQuery
 from app.models.user import SubscriptionUserResponse, UsersResponseWithInbounds
-from app.settings import subscription_settings
+from app.settings import hwid_settings, subscription_settings
 from app.subscription.share import encode_title, generate_subscription, setup_format_variables
 from app.templates import render_template
-from config import SUBSCRIPTION_PAGE_TEMPLATE
+from config import template_settings, wireguard_settings
 
 from . import BaseOperation
 from .user import UserOperation
@@ -114,9 +120,20 @@ class SubscriptionOperation(BaseOperation):
 
         try:
             return profile_title.format_map(format_variables)
-        except (ValueError, KeyError):
+        except ValueError, KeyError:
             # Invalid format string, return original title
             return profile_title
+
+    @staticmethod
+    def _format_announce(sub_settings: SubSettings, format_variables: dict) -> str:
+        """Format announcement text with dynamic variables, falling back to raw text if needed."""
+        if not sub_settings.announce:
+            return ""
+
+        try:
+            return sub_settings.announce.format_map(format_variables)
+        except ValueError, KeyError:
+            return sub_settings.announce
 
     @staticmethod
     def create_response_headers(
@@ -140,6 +157,7 @@ class SubscriptionOperation(BaseOperation):
         # Format profile title with dynamic variables
         format_variables = setup_format_variables(user)
         formatted_title = SubscriptionOperation._format_profile_title(user, format_variables, sub_settings)
+        formatted_announce = SubscriptionOperation._format_announce(sub_settings, format_variables)
 
         # Prefer admin's support_url over subscription settings
         support_url = (getattr(user.admin, "support_url", None) if user.admin else None) or sub_settings.support_url
@@ -154,7 +172,7 @@ class SubscriptionOperation(BaseOperation):
             "profile-title": encode_title(formatted_title),
             "profile-update-interval": str(sub_settings.update_interval),
             "subscription-userinfo": "; ".join(f"{key}={val}" for key, val in user_info.items()),
-            "announce": encode_title(sub_settings.announce),
+            "announce": encode_title(formatted_announce),
             "announce-url": sub_settings.announce_url,
         }
         if extra_headers:
@@ -185,6 +203,30 @@ class SubscriptionOperation(BaseOperation):
 
         return headers
 
+    @classmethod
+    def _format_subscription_response_headers(
+        cls, sub_settings: SubSettings, format_variables: dict[str, str | int | float]
+    ) -> dict[str, str]:
+        if not sub_settings.response_headers:
+            return {}
+
+        headers: dict[str, str] = {}
+        for raw_name, raw_value in sub_settings.response_headers.items():
+            header_name = str(raw_name).strip()
+            if not header_name or raw_value is None:
+                continue
+
+            formatted_value = cls._stringify_rule_header_value(raw_value, format_variables)
+            if not formatted_value:
+                continue
+
+            if header_name.lower() in cls._ENCODED_RULE_RESPONSE_HEADERS:
+                formatted_value = encode_title(formatted_value)
+
+            headers[header_name] = formatted_value
+
+        return headers
+
     @staticmethod
     def _stringify_rule_header_value(value: Any, format_variables: dict[str, str | int | float]) -> str:
         if isinstance(value, str):
@@ -193,7 +235,7 @@ class SubscriptionOperation(BaseOperation):
                 return ""
             try:
                 return header_value.format_map(format_variables)
-            except (ValueError, KeyError):
+            except ValueError, KeyError:
                 return header_value
 
         if isinstance(value, (dict, list, tuple, bool, int, float)):
@@ -206,19 +248,20 @@ class SubscriptionOperation(BaseOperation):
         """Create response headers for /info endpoint with only support-url, announce, and announce-url."""
         # Prefer admin's support_url over subscription settings
         support_url = (getattr(user.admin, "support_url", None) if user.admin else None) or sub_settings.support_url
+        formatted_announce = SubscriptionOperation._format_announce(sub_settings, setup_format_variables(user))
 
         headers = {
             "support-url": support_url,
-            "announce": encode_title(sub_settings.announce),
+            "announce": encode_title(formatted_announce),
             "announce-url": sub_settings.announce_url,
         }
 
         # Only include headers that have values
         return {k: v for k, v in headers.items() if v}
 
-    async def fetch_config(self, user: UsersResponseWithInbounds, client_type: ConfigFormat) -> tuple[str, str]:
+    async def fetch_config(self, user: UsersResponseWithInbounds, client_type: ConfigFormat) -> tuple[str | bytes, str]:
         # Get client configuration
-        config = client_config.get(client_type)
+        config = client_config.get(client_type, {})
         sub_settings = await subscription_settings()
         randomize_order = sub_settings.randomize_order
 
@@ -226,12 +269,47 @@ class SubscriptionOperation(BaseOperation):
         return (
             await generate_subscription(
                 user=user,
-                config_format=config["config_format"],
-                as_base64=config["as_base64"],
+                config_format=config.get("config_format", ""),
+                as_base64=config.get("as_base64", ""),
                 randomize_order=randomize_order,
             ),
             config["media_type"],
         )
+
+    async def validate_and_register_hwid(
+        self,
+        db: AsyncSession,
+        user_id: int,
+        user_hwid_limit: int | None,
+        x_hwid: str | None,
+        x_device_os: str | None,
+        x_ver_os: str | None,
+        x_device_model: str | None,
+    ):
+        hwid_conf: HWIDSettings = await hwid_settings()
+        if not hwid_conf.enabled:
+            return
+
+        if not x_hwid:
+            if hwid_conf.forced:
+                await self.raise_error(message="HWID header required", code=403)
+            return
+
+        existing_hwid = await get_user_hwid_by_value(db, user_id, x_hwid)
+        if existing_hwid:
+            await register_user_hwid(db, user_id, x_hwid, x_device_os, x_ver_os, x_device_model)
+            return
+
+        # It's a new HWID, check limit
+        limit = user_hwid_limit if user_hwid_limit is not None else hwid_conf.fallback_limit
+        if limit == 0:
+            pass  # unlimited
+        else:
+            current_count = await get_user_hwid_count(db, user_id)
+            if current_count >= limit:
+                await self.raise_error(message="Device limit reached", code=403)
+
+        await register_user_hwid(db, user_id, x_hwid, x_device_os, x_ver_os, x_device_model)
 
     async def user_subscription(
         self,
@@ -239,23 +317,27 @@ class SubscriptionOperation(BaseOperation):
         token: str,
         accept_header: str = "",
         user_agent: str = "",
+        ip: str | None = None,
         request_url: str = "",
+        x_hwid: str | None = None,
+        x_device_os: str | None = None,
+        x_ver_os: str | None = None,
+        x_device_model: str | None = None,
     ):
         """
         Provides a subscription link based on the user agent (Clash, V2Ray, etc.).
         """
-        # Handle HTML request (subscription page)
         sub_settings: SubSettings = await subscription_settings()
         db_user = await self.get_validated_sub(db, token)
         user = await self.validated_user(db_user)
-
         is_browser_request = "text/html" in accept_header
+        is_subscription_page_request = is_browser_request and not sub_settings.disable_sub_template
 
-        if not sub_settings.disable_sub_template and is_browser_request:
+        if is_subscription_page_request:
             template = (
                 db_user.admin.sub_template
                 if db_user.admin and db_user.admin.sub_template
-                else SUBSCRIPTION_PAGE_TEMPLATE
+                else template_settings.subscription_page_template
             )
             links = []
             if sub_settings.allow_browser_config:
@@ -266,27 +348,29 @@ class SubscriptionOperation(BaseOperation):
                 links = conf.splitlines()
 
             format_variables = await self.get_format_variables(user)
+            formatted_announce = self._format_announce(sub_settings, format_variables)
 
             return HTMLResponse(
                 render_template(
                     template,
-                    {
-                        "user": user,
-                        "links": links,
-                        "announce": sub_settings.announce,
-                        "announce_url": sub_settings.announce_url,
-                        "apps": self._make_apps_import_urls(sub_settings.applications, format_variables),
-                    },
+                    self._build_subscription_body_payload(
+                        user, links, formatted_announce, sub_settings, format_variables
+                    ),
                 )
             )
         else:
+            await self.validate_and_register_hwid(
+                db, db_user.id, db_user.hwid_limit, x_hwid, x_device_os, x_ver_os, x_device_model
+            )
             matched_rule = self.detect_client_rule(user_agent, sub_settings.rules)
             client_type = matched_rule.target if matched_rule else None
             if client_type == ConfigFormat.block or not client_type:
                 await self.raise_error(message="Client not supported", code=406)
+            if client_type == ConfigFormat.wireguard and not wireguard_settings.enabled:
+                await self.raise_error(message="Client not supported", code=406)
 
             # Update user subscription info
-            await user_sub_update(db, db_user.id, user_agent)
+            await user_sub_update(db, db_user.id, user_agent, ip=ip, hwid=x_hwid)
             conf, media_type = await self.fetch_config(user, client_type)
 
             # If disable_sub_template is True and it's a browser request, use inline to view instead of download
@@ -297,9 +381,13 @@ class SubscriptionOperation(BaseOperation):
                 sub_settings,
                 inline=inline_view,
                 extra_headers={},
-                extension=client_config.get(client_type, {}).get("extension", "") if client_type else "",
             )
             try:
+                response_headers.update(
+                    self._format_subscription_response_headers(
+                        sub_settings, await self._get_rule_response_header_variables(user, client_type)
+                    )
+                )
                 response_headers.update(
                     self._format_rule_response_headers(
                         matched_rule, await self._get_rule_response_header_variables(user, client_type)
@@ -332,20 +420,41 @@ class SubscriptionOperation(BaseOperation):
         return format_variables
 
     async def user_subscription_with_client_type(
-        self, db: AsyncSession, token: str, client_type: ConfigFormat, request_url: str = "", accept_header: str = ""
+        self,
+        db: AsyncSession,
+        token: str,
+        client_type: ConfigFormat,
+        request_url: str = "",
+        accept_header: str = "",
+        x_hwid: str | None = None,
+        x_device_os: str | None = None,
+        x_ver_os: str | None = None,
+        x_device_model: str | None = None,
     ):
         """Provides a subscription link based on the specified client type (e.g., Clash, V2Ray)."""
         sub_settings: SubSettings = await subscription_settings()
+
+        if client_type == ConfigFormat.wireguard and not wireguard_settings.enabled:
+            await self.raise_error(message="Client not supported", code=406)
 
         if client_type == ConfigFormat.block or not getattr(sub_settings.manual_sub_request, client_type):
             await self.raise_error(message="Client not supported", code=406)
         db_user = await self.get_validated_sub(db, token=token)
         user = await self.validated_user(db_user)
 
+        await self.validate_and_register_hwid(
+            db, db_user.id, db_user.hwid_limit, x_hwid, x_device_os, x_ver_os, x_device_model
+        )
+
         response_headers = self.create_response_headers(
             user, request_url, sub_settings, extension=client_config.get(client_type, {}).get("extension", "")
         )
         try:
+            response_headers.update(
+                self._format_subscription_response_headers(
+                    sub_settings, await self._get_rule_response_header_variables(user, client_type)
+                )
+            )
             response_headers = self.sanitize_response_headers(response_headers)
         except ValueError as exc:
             await self.raise_error(message=str(exc), code=400)
@@ -354,7 +463,109 @@ class SubscriptionOperation(BaseOperation):
         # Create response headers
         return Response(content=conf, media_type=media_type, headers=response_headers)
 
-    async def user_subscription_info(self, db: AsyncSession, token: str) -> tuple[SubscriptionUserResponse, dict]:
+    def _build_subscription_body_payload(
+        self,
+        user: UsersResponseWithInbounds,
+        links: list[str],
+        formatted_announce: str,
+        sub_settings: SubSettings,
+        format_variables: dict,
+    ) -> dict[str, Any]:
+        return {
+            "user": user,
+            "links": links,
+            "announce": formatted_announce,
+            "announce_url": sub_settings.announce_url,
+            "apps": self._make_apps_import_urls(sub_settings.applications, format_variables),
+        }
+
+    def _build_raw_subscription_payload(
+        self,
+        user: UsersResponseWithInbounds,
+        links: list[str],
+        formatted_announce: str,
+        sub_settings: SubSettings,
+        format_variables: dict,
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        return {
+            "body": self._build_subscription_body_payload(
+                user, links, formatted_announce, sub_settings, format_variables
+            ),
+            "headers": headers,
+        }
+
+    async def user_subscription_raw(self, db: AsyncSession, token: str, request_url: str = ""):
+        sub_settings: SubSettings = await subscription_settings()
+        db_user = await self.get_validated_sub(db, token)
+        user = await self.validated_user(db_user)
+
+        links = []
+        if sub_settings.allow_browser_config:
+            conf, _ = await self.fetch_config(user, ConfigFormat.links)
+            links = conf.splitlines()
+        format_variables = await self.get_format_variables(user)
+        formatted_announce = self._format_announce(sub_settings, format_variables)
+        response_headers = self.create_response_headers(user, request_url, sub_settings)
+        try:
+            response_headers.update(
+                self._format_subscription_response_headers(
+                    sub_settings, await self._get_rule_response_header_variables(user, ConfigFormat.links)
+                )
+            )
+            response_headers = self.sanitize_response_headers(response_headers)
+        except ValueError as exc:
+            await self.raise_error(message=str(exc), code=400)
+
+        return self._build_raw_subscription_payload(
+            user,
+            links,
+            formatted_announce,
+            sub_settings,
+            format_variables,
+            response_headers,
+        )
+
+    async def user_subscription_by_user(
+        self,
+        db_user: User,
+        client_type: ConfigFormat,
+        request_url: str = "",
+    ):
+        if client_type == ConfigFormat.wireguard and not wireguard_settings.enabled:
+            await self.raise_error(message="Client not supported", code=406)
+
+        if client_type == ConfigFormat.block:
+            await self.raise_error(message="Client not supported", code=406)
+
+        sub_settings: SubSettings = await subscription_settings()
+        user = await self.validated_user(db_user)
+
+        response_headers = self.create_response_headers(
+            user, request_url, sub_settings, extension=client_config.get(client_type, {}).get("extension", "")
+        )
+        try:
+            response_headers.update(
+                self._format_subscription_response_headers(
+                    sub_settings, await self._get_rule_response_header_variables(user, client_type)
+                )
+            )
+            response_headers = self.sanitize_response_headers(response_headers)
+        except ValueError as exc:
+            await self.raise_error(message=str(exc), code=400)
+        conf, media_type = await self.fetch_config(user, client_type)
+
+        return Response(content=conf, media_type=media_type, headers=response_headers)
+
+    async def user_subscription_by_id(
+        self, db: AsyncSession, user_id: int, admin: AdminDetails, client_type: ConfigFormat, request_url: str = ""
+    ):
+        db_user = await self.get_validated_user_by_id(db, user_id, admin)
+        return await self.user_subscription_by_user(db_user, client_type, request_url)
+
+    async def user_subscription_info(
+        self, db: AsyncSession, token: str, ip: str | None = None
+    ) -> tuple[SubscriptionUserResponse, dict]:
         """Retrieves detailed information about the user's subscription."""
         sub_settings: SubSettings = await subscription_settings()
         db_user = await self.get_validated_sub(db, token=token)
@@ -366,6 +577,7 @@ class SubscriptionOperation(BaseOperation):
         except ValueError as exc:
             await self.raise_error(message=str(exc), code=400)
         user_response = SubscriptionUserResponse.model_validate(db_user)
+        user_response.ip = ip
 
         return user_response, response_headers
 
@@ -392,13 +604,11 @@ class SubscriptionOperation(BaseOperation):
         self,
         db: AsyncSession,
         token: str,
-        start: dt = None,
-        end: dt = None,
-        period: Period = Period.hour,
+        query: SubscriptionUsageQuery,
     ) -> UserUsageStatsList:
         """Fetches the usage statistics for the user within a specified date range."""
-        start, end = await self.validate_dates(start, end, True)
+        start, end = await self.validate_dates(query.start, query.end, True)
 
         db_user = await self.get_validated_sub(db, token=token)
 
-        return await get_user_usages(db, db_user.id, start, end, period)
+        return await get_user_usages(db, db_user.id, start, end, query.period)

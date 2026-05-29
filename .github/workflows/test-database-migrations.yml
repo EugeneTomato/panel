@@ -11,6 +11,7 @@ on:
             - "uv.lock"
             - "pyproject.toml"
             - ".github/workflows/test-database-migrations.yml"
+    workflow_dispatch:
 
 jobs:
     test-sqlite:
@@ -19,7 +20,7 @@ jobs:
             - uses: actions/checkout@v6
             - uses: actions/setup-python@v6
               with:
-                  python-version: "3.12"
+                  python-version: "3.14"
 
             - name: Set DATABASE_URL
               run: |
@@ -27,11 +28,14 @@ jobs:
                   echo "TESTING=1" >> $GITHUB_ENV
                   echo "SQLALCHEMY_DATABASE_URL=sqlite+aiosqlite:///./test.db" >> $GITHUB_ENV
 
-            - name: Install dependencies
-              run: make setup
+            - name: Install test dependencies
+              run: make setup-test
 
             - name: Run Alembic Migrations
               run: make run-migration
+
+            - name: Check Migrations
+              run: make check-migrations
 
             - name: Run Tests
               run: make test
@@ -55,7 +59,7 @@ jobs:
             - uses: actions/checkout@v6
             - uses: actions/setup-python@v6
               with:
-                  python-version: "3.12"
+                  python-version: "3.14"
 
             - name: Set DATABASE_URL
               run: |
@@ -63,11 +67,14 @@ jobs:
                   echo "TESTING=1" >> $GITHUB_ENV
                   echo "SQLALCHEMY_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/testdb" >> $GITHUB_ENV
 
-            - name: Install dependencies
-              run: make setup
+            - name: Install test dependencies
+              run: make setup-test
 
             - name: Run Alembic Migrations
               run: make run-migration
+
+            - name: Check Migrations
+              run: make check-migrations
 
             - name: Run Tests
               run: make test
@@ -93,7 +100,7 @@ jobs:
             - uses: actions/checkout@v6
             - uses: actions/setup-python@v6
               with:
-                  python-version: "3.12"
+                  python-version: "3.14"
 
             - name: Set DATABASE_URL
               run: |
@@ -104,8 +111,8 @@ jobs:
                   echo "NATS_URL=nats://localhost:4222" >> $GITHUB_ENV
                   echo "UVICORN_WORKERS=2" >> $GITHUB_ENV
 
-            - name: Install dependencies
-              run: make setup
+            - name: Install test dependencies
+              run: make setup-test
 
             - name: Wait for TimescaleDB
               run: |
@@ -143,6 +150,9 @@ jobs:
             - name: Run Alembic Migrations
               run: make run-migration
 
+            - name: Check Migrations
+              run: make check-migrations
+
             - name: Run Tests (multi-worker)
               run: |
                   SCHEDULER_JOBSTORE_URL=sqlite:///./node-scheduler.db ROLE=node uv run python node_worker.py &
@@ -169,7 +179,7 @@ jobs:
             - uses: actions/checkout@v6
             - uses: actions/setup-python@v6
               with:
-                  python-version: "3.12"
+                  python-version: "3.14"
 
             - name: Set DATABASE_URL
               run: |
@@ -177,11 +187,14 @@ jobs:
                   echo "TESTING=1" >> $GITHUB_ENV
                   echo "SQLALCHEMY_DATABASE_URL=mysql+asyncmy://root:root@localhost:3306/testdb" >> $GITHUB_ENV
 
-            - name: Install dependencies
-              run: make setup
+            - name: Install test dependencies
+              run: make setup-test
 
             - name: Run Alembic Migrations
               run: make run-migration
+
+            - name: Check Migrations
+              run: make check-migrations
 
             - name: Run Tests
               run: make test
@@ -208,7 +221,7 @@ jobs:
             - uses: actions/checkout@v6
             - uses: actions/setup-python@v6
               with:
-                  python-version: "3.12"
+                  python-version: "3.14"
 
             - name: Set DATABASE_URL
               run: |
@@ -219,8 +232,8 @@ jobs:
                   echo "NATS_URL=nats://localhost:4222" >> $GITHUB_ENV
                   echo "UVICORN_WORKERS=2" >> $GITHUB_ENV
 
-            - name: Install dependencies
-              run: make setup
+            - name: Install test dependencies
+              run: make setup-test
 
             - name: Wait for MariaDB and ensure testuser grants
               run: |
@@ -302,6 +315,9 @@ jobs:
 
             - name: Run Alembic Migrations
               run: make run-migration
+
+            - name: Check Migrations
+              run: make check-migrations
 
             - name: Run Tests (multi-worker)
               run: |

@@ -66,7 +66,7 @@ FormItem.displayName = 'FormItem'
 const FormLabel = React.forwardRef<React.ElementRef<typeof LabelPrimitive.Root>, React.ComponentPropsWithoutRef<typeof LabelPrimitive.Root>>(({ className, ...props }, ref) => {
   const { formItemId } = useFormField()
 
-  return <Label ref={ref} className={cn(className)} htmlFor={formItemId} {...props} />
+  return <Label ref={ref} className={cn('block', className)} htmlFor={formItemId} {...props} />
 })
 FormLabel.displayName = 'FormLabel'
 
@@ -86,16 +86,29 @@ FormDescription.displayName = 'FormDescription'
 
 const FormMessage = React.forwardRef<HTMLParagraphElement, React.HTMLAttributes<HTMLParagraphElement>>(({ className, children, ...props }, ref) => {
   const { error, formMessageId } = useFormField()
-  const body = error ? String(error?.message) : children
   const { t } = useTranslation()
 
-  if (!body) {
+  let body: React.ReactNode = children
+  if (error) {
+    const m = error.message
+    if (typeof m === 'string') {
+      const trimmed = m.trim()
+      if (trimmed !== '' && trimmed !== '{}' && trimmed !== '[object Object]') body = m
+      else body = undefined
+    } else if (m != null && typeof m !== 'object') {
+      body = String(m)
+    } else {
+      body = undefined
+    }
+  }
+
+  if (body == null || body === '') {
     return null
   }
 
   return (
     <p ref={ref} id={formMessageId} className={cn('text-[0.8rem] font-medium text-destructive', className)} {...props}>
-      {t(body.toString())}
+      {typeof body === 'string' ? t(body, { defaultValue: body }) : body}
     </p>
   )
 })

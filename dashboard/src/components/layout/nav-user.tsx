@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useSidebar } from '@/components/ui/sidebar'
 import { type AdminDetails } from '@/service/api'
-import { ChevronsUpDown, LogOut, Network, Wifi, Shield, UsersIcon, UserCircle } from 'lucide-react'
+import { ChevronsUpDown, LogOut, UserRoundKey, UsersIcon, UserCircle, ChartPie, ChartNoAxesColumn, UserRound } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router'
 import { formatBytes } from '@/utils/formatByte'
@@ -62,12 +62,12 @@ export function NavUser({
                       <Badge variant={admin.is_sudo ? 'secondary' : 'outline'} className="h-4 px-1 py-0 text-[10px]">
                         {admin.is_sudo ? (
                           <>
-                            <Shield className="mr-1 size-3" />
+                            <UserRoundKey className="mr-1 size-3" />
                             {t('sudo')}
                           </>
                         ) : (
                           <>
-                            <UsersIcon className="mr-1 size-3" />
+                            <UserRound className="mr-1 size-3" />
                             {t('admin')}
                           </>
                         )}
@@ -87,7 +87,7 @@ export function NavUser({
                       </span>
                     </div>
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-muted-foreground">{t('admins.lifetime.used.traffic')}</span>
+                      <span className="text-muted-foreground">{t('statistics.totalUsage')}</span>
                       <span className="font-medium">
                         <span dir="ltr" style={{ unicodeBidi: 'isolate' }}>
                           {formatBytes(admin?.lifetime_used_traffic || 0)}
@@ -133,12 +133,12 @@ export function NavUser({
                     <Badge variant={admin.is_sudo ? 'secondary' : 'outline'} className="hidden h-4 px-1 py-0 text-[10px] lg:hidden">
                       {admin.is_sudo ? (
                         <>
-                          <Shield className="mr-1 size-3" />
+                          <UserRoundKey className="mr-1 size-3" />
                           {t('sudo')}
                         </>
                       ) : (
                         <>
-                          <UsersIcon className="mr-1 size-3" />
+                          <UserRound className="mr-1 size-3" />
                           {t('admin')}
                         </>
                       )}
@@ -147,7 +147,7 @@ export function NavUser({
                 </div>
                 {admin && (
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <Network className="size-3" />
+                    <ChartPie className="size-3" />
                     <span dir="ltr" style={{ unicodeBidi: 'isolate' }}>
                       {formatBytes(admin?.used_traffic || 0)}
                     </span>
@@ -157,7 +157,7 @@ export function NavUser({
               <ChevronsUpDown className="ml-auto size-4" />
             </SidebarMenuButton>
           </DropdownMenuTrigger>
-          <DropdownMenuContent className="w-[--radix-dropdown-menu-trigger-width] min-w-56 rounded-lg" side={'bottom'} align="end" sideOffset={4}>
+          <DropdownMenuContent className="w-(--radix-dropdown-menu-trigger-width) min-w-56 rounded-lg" side={'bottom'} align="end" sideOffset={4}>
             <DropdownMenuLabel className="p-0 font-normal">
               <div className="flex flex-col gap-2 px-1 py-1.5 text-left text-sm">
                 <div className="grid flex-1 text-left text-sm leading-tight">
@@ -167,12 +167,12 @@ export function NavUser({
                       <Badge variant={admin.is_sudo ? 'secondary' : 'outline'} className="flex h-4 items-center gap-2 py-0 text-[10px]">
                         {admin.is_sudo ? (
                           <>
-                            <Shield className="size-3" />
+                            <UserRoundKey className="size-3" />
                             <span>{t('sudo')}</span>
                           </>
                         ) : (
                           <>
-                            <UsersIcon className="size-3" />
+                            <UserRound className="size-3" />
                             <span>{t('admin')}</span>
                           </>
                         )}
@@ -183,7 +183,7 @@ export function NavUser({
                 {admin && (
                   <div className="flex flex-col gap-1 text-xs text-muted-foreground">
                     <div className="flex items-center gap-2">
-                      <Network className="size-3" />
+                      <ChartPie className="size-3" />
                       <span>
                         {t('admins.used.traffic')}:{' '}
                         <span dir="ltr" style={{ unicodeBidi: 'isolate' }}>
@@ -192,9 +192,9 @@ export function NavUser({
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <Wifi className="size-3" />
+                      <ChartNoAxesColumn className="size-3" />
                       <span>
-                        {t('admins.lifetime.used.traffic')}:{' '}
+                        {t('statistics.totalUsage')}:{' '}
                         <span dir="ltr" style={{ unicodeBidi: 'isolate' }}>
                           {formatBytes(admin?.lifetime_used_traffic || 0)}
                         </span>

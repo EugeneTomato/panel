@@ -17,7 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { CopyButton } from '@/components/common/copy-button'
-import QRCodeModal from '@/components/dialogs/qrcode-modal'
+import QRCodeModal from '@/features/bulk/dialogs/qrcode-modal'
 import { useClipboard } from '@/hooks/use-clipboard'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { 
@@ -41,6 +41,18 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import useDirDetection from '@/hooks/use-dir-detection'
 import { formatBytes } from '@/utils/formatByte'
 import { Skeleton } from '@/components/ui/skeleton'
+
+const getPreviewRandomHex = (index: number, count: number) => {
+  const seed = `preview-${index}-${count}`
+  let hash = 0x811c9dc5
+  for (let i = 0; i < seed.length; i++) {
+    hash ^= seed.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  const first = (hash >>> 0).toString(16).padStart(8, '0')
+  const second = (Math.imul(hash ^ 0x9e3779b9, 0x85ebca6b) >>> 0).toString(16).slice(-4).padStart(4, '0')
+  return `${first}${second}`.slice(0, 12)
+}
 
 export default function BulkCreateUsersPage() {
   const { t, i18n } = useTranslation()
@@ -194,13 +206,8 @@ export default function BulkCreateUsersPage() {
         setPreviewUsernames([])
         return
       }
-      // For random strategy, generate stable example usernames based on userCount
-      // Using a simple hash-like approach to keep them stable
       for (let i = 0; i < Math.min(3, parsedUserCount); i++) {
-        // Create a stable "random" suffix based on index
-        const stableSeed = `preview-${i}-${parsedUserCount}`.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
-        const randomPart = stableSeed.toString(36).substring(0, 6).padStart(6, '0')
-        const username = `${prefix}user-${randomPart}${suffix}`
+        const username = `${prefix}${getPreviewRandomHex(i, parsedUserCount)}${suffix}`
         previews.push(username)
       }
     }
@@ -429,6 +436,18 @@ export default function BulkCreateUsersPage() {
                     <div className="flex items-center justify-between">
                       <span className="text-muted-foreground">{t('userDialog.dataLimit')}:</span>
                       <span className="font-medium" dir="ltr">{formatBytes(selectedTemplate.data_limit)}</span>
+                    </div>
+                  )}
+                  {selectedTemplate.hwid_limit !== undefined && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground">{t('templates.hwidLimit', { defaultValue: 'HWID Limit' })}:</span>
+                      <span className="font-medium" dir="ltr">
+                        {selectedTemplate.hwid_limit === null
+                          ? t('default', { defaultValue: 'Default' })
+                          : selectedTemplate.hwid_limit === 0
+                            ? t('unlimited', { defaultValue: 'Unlimited' })
+                            : selectedTemplate.hwid_limit}
+                      </span>
                     </div>
                   )}
                   {selectedTemplate.expire_duration !== null && selectedTemplate.expire_duration !== undefined && (

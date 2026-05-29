@@ -1,6 +1,5 @@
 import react from '@vitejs/plugin-react'
-import autoprefixer from 'autoprefixer'
-import tailwindcss from 'tailwindcss'
+import tailwindcss from '@tailwindcss/vite'
 import { defineConfig } from 'vite'
 import svgr from 'vite-plugin-svgr'
 import path from 'path'
@@ -12,14 +11,10 @@ export default defineConfig({
   server: {
     host: true,
   },
-  css: {
-    postcss: {
-      plugins: [tailwindcss, autoprefixer],
-    },
-  },
   build: {
     outDir: 'build',
     assetsDir: 'statics',
+    emptyOutDir: false,
     rollupOptions: {
       output: {
         manualChunks(id) {
@@ -140,29 +135,21 @@ export default defineConfig({
     ],
   },
   plugins: [
+    tailwindcss(),
     react(),
     svgr(),
     VitePWA({
-      registerType: 'autoUpdate',
+      registerType: 'prompt',
       injectRegister: false,
       workbox: {
         navigateFallback: '/index.html',
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
-        skipWaiting: true,
-        clientsClaim: true,
-        runtimeCaching: [
-          {
-            urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'google-fonts-cache',
-              expiration: {
-                maxEntries: 10,
-                maxAgeSeconds: 60 * 60 * 24 * 365,
-              },
-            },
-          },
-        ],
+        // Monaco is loaded lazily in editor dialogs, so its largest chunks
+        // should stay network-fetched instead of bloating the app shell precache.
+        globIgnores: ['statics/editor.api*.js', 'statics/ts.worker*.js'],
+        cleanupOutdatedCaches: false,
+        skipWaiting: false,
+        clientsClaim: false,
       },
     }),
   ],

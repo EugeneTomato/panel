@@ -1,32 +1,47 @@
 import io
 import json
 import zipfile
+from base64 import b64encode
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+from math import ceil
+import asyncio
+import time
 from urllib.parse import parse_qs, unquote, urlsplit
+from unittest.mock import AsyncMock, MagicMock
 
 from fastapi import status
+from sqlalchemy import func, select, update
 
-from app.models.settings import ConfigFormat, SubRule
+from app.db.crud.hwid import register_user_hwid
+from app.db.models import NodeUserUsage, User
+from app.models.stats import Period, UserCountMetric, UserCountMetricStat, UserCountMetricStatsList
+from app.models.settings import ConfigFormat, SubRule, Subscription
 from app.operation.subscription import SubscriptionOperation
+from app.utils import jwt as jwt_utils
 from app.utils.crypto import generate_wireguard_keypair, get_wireguard_public_key
-from tests.api import client
+from app.utils.jwt import create_subscription_token, get_secret_key, get_subscription_payload
+from config import usage_settings
+from tests.api import TestSession, client
 from tests.api.helpers import (
     auth_headers,
+    create_admin,
     create_client_template,
     create_core,
     create_group,
     create_hosts_for_inbounds,
     create_user,
     create_user_template,
+    delete_admin,
     delete_client_template,
     delete_core,
     delete_group,
     delete_user,
     delete_user_template,
-    get_inbounds,
     unique_name,
 )
+from tests.api.sample_data import XRAY_CONFIG
 
 
 def setup_groups(access_token: str, count: int = 1):
@@ -41,10 +56,67 @@ def cleanup_groups(access_token: str, core: dict, groups: list[dict]):
     delete_core(access_token, core["id"])
 
 
+def set_user_online_at(username: str, online_at: datetime) -> None:
+    async def _set_online_at():
+        async with TestSession() as session:
+            await session.execute(update(User).where(User.username == username).values(online_at=online_at))
+            await session.commit()
+
+    asyncio.run(_set_online_at())
+
+
+def count_user_chart_rows(user_id: int) -> int:
+    async def _count_rows():
+        async with TestSession() as session:
+            result = await session.execute(
+                select(func.count()).select_from(NodeUserUsage).where(NodeUserUsage.user_id == user_id)
+            )
+            return result.scalar_one()
+
+    return asyncio.run(_count_rows())
+
+
 def extract_wireguard_config_bodies(response) -> list[str]:
     with zipfile.ZipFile(io.BytesIO(response.content)) as zip_file:
         config_files = [name for name in zip_file.namelist() if name.endswith(".conf")]
         return [zip_file.read(name).decode("utf-8") for name in config_files]
+
+
+def _build_legacy_subscription_token(username: str) -> str:
+    created_at = str(ceil(time.time()))
+    data = f"{username},{created_at}"
+    data_b64 = b64encode(data.encode("utf-8"), altchars=b"-_").decode("utf-8").rstrip("=")
+    secret = asyncio.run(get_secret_key())
+    sign = b64encode(sha256((data_b64 + secret).encode("utf-8")).digest(), altchars=b"-_").decode("utf-8")[:10]
+    return data_b64 + sign
+
+
+def _build_v2_subscription_token(user_id: int, secret: str) -> str:
+    created_at = str(ceil(time.time()))
+    data = f"v2,{user_id},{created_at}"
+    data_b64 = b64encode(data.encode("utf-8"), altchars=b"-_").decode("utf-8").rstrip("=")
+    sign = b64encode(sha256((data_b64 + secret).encode("utf-8")).digest(), altchars=b"-_").decode("utf-8")[:10]
+    return data_b64 + sign
+
+
+def test_subscription_token_generation_avoids_trailing_dash_or_underscore_and_keeps_v2_compatibility(monkeypatch):
+    secret = "test-secret"
+
+    async def fake_get_secret_key():
+        return secret
+
+    monkeypatch.setattr(jwt_utils, "get_secret_key", fake_get_secret_key)
+
+    token = asyncio.run(create_subscription_token(123))
+    assert token[-1].isalnum()
+    assert not token.endswith(("-", "_"))
+
+    payload = asyncio.run(get_subscription_payload(token))
+    assert payload["user_id"] == 123
+
+    old_v2_token = _build_v2_subscription_token(456, secret)
+    old_v2_payload = asyncio.run(get_subscription_payload(old_v2_token))
+    assert old_v2_payload["user_id"] == 456
 
 
 def test_user_create_active(access_token):
@@ -162,6 +234,377 @@ def test_users_get(access_token):
         cleanup_groups(access_token, core, groups)
 
 
+def test_users_get_filters_by_data_limit_range(access_token):
+    core, groups = setup_groups(access_token, 1)
+    small_limit_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={
+            "username": unique_name("test_user_limit_small"),
+            "data_limit": 1024 * 1024 * 1024,
+        },
+    )
+    large_limit_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={
+            "username": unique_name("test_user_limit_large"),
+            "data_limit": 20 * 1024 * 1024 * 1024,
+        },
+    )
+
+    try:
+        response = client.get(
+            "/api/users",
+            headers=auth_headers(access_token),
+            params={
+                "data_limit_min": 5 * 1024 * 1024 * 1024,
+                "data_limit_max": 25 * 1024 * 1024 * 1024,
+            },
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        listed_usernames = {user["username"] for user in response.json()["users"]}
+        assert large_limit_user["username"] in listed_usernames
+        assert small_limit_user["username"] not in listed_usernames
+    finally:
+        delete_user(access_token, small_limit_user["username"])
+        delete_user(access_token, large_limit_user["username"])
+        cleanup_groups(access_token, core, groups)
+
+
+def test_users_get_filters_by_data_limit_max_excludes_no_limit(access_token):
+    core, groups = setup_groups(access_token, 1)
+    small_limit_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={
+            "username": unique_name("test_user_limit_max_small"),
+            "data_limit": 1024 * 1024 * 1024,
+        },
+    )
+    large_limit_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={
+            "username": unique_name("test_user_limit_max_large"),
+            "data_limit": 20 * 1024 * 1024 * 1024,
+        },
+    )
+    unlimited_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={
+            "username": unique_name("test_user_limit_max_unlimited"),
+            "data_limit": 0,
+        },
+    )
+
+    try:
+        response = client.get(
+            "/api/users",
+            headers=auth_headers(access_token),
+            params={"data_limit_max": 5 * 1024 * 1024 * 1024},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        listed_usernames = {user["username"] for user in response.json()["users"]}
+        assert small_limit_user["username"] in listed_usernames
+        assert large_limit_user["username"] not in listed_usernames
+        assert unlimited_user["username"] not in listed_usernames
+    finally:
+        delete_user(access_token, small_limit_user["username"])
+        delete_user(access_token, large_limit_user["username"])
+        delete_user(access_token, unlimited_user["username"])
+        cleanup_groups(access_token, core, groups)
+
+
+def test_users_get_filters_by_no_data_limit(access_token):
+    core, groups = setup_groups(access_token, 1)
+    unlimited_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={
+            "username": unique_name("test_user_no_limit"),
+            "data_limit": 0,
+        },
+    )
+    limited_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={
+            "username": unique_name("test_user_with_limit"),
+            "data_limit": 5 * 1024 * 1024 * 1024,
+        },
+    )
+
+    try:
+        response = client.get(
+            "/api/users",
+            headers=auth_headers(access_token),
+            params={"no_data_limit": True},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        listed_usernames = {user["username"] for user in response.json()["users"]}
+        assert unlimited_user["username"] in listed_usernames
+        assert limited_user["username"] not in listed_usernames
+    finally:
+        delete_user(access_token, unlimited_user["username"])
+        delete_user(access_token, limited_user["username"])
+        cleanup_groups(access_token, core, groups)
+
+
+def test_users_get_filters_by_expire_date_range(access_token):
+    core, groups = setup_groups(access_token, 1)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    early_expire = now + timedelta(days=5)
+    late_expire = now + timedelta(days=45)
+    early_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={
+            "username": unique_name("test_user_expire_early"),
+            "expire": early_expire.isoformat(),
+        },
+    )
+    late_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={
+            "username": unique_name("test_user_expire_late"),
+            "expire": late_expire.isoformat(),
+        },
+    )
+
+    try:
+        response = client.get(
+            "/api/users",
+            headers=auth_headers(access_token),
+            params={
+                "expire_after": (now + timedelta(days=2)).isoformat(),
+                "expire_before": (now + timedelta(days=10)).isoformat(),
+            },
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        listed_usernames = {user["username"] for user in response.json()["users"]}
+        assert early_user["username"] in listed_usernames
+        assert late_user["username"] not in listed_usernames
+    finally:
+        delete_user(access_token, early_user["username"])
+        delete_user(access_token, late_user["username"])
+        cleanup_groups(access_token, core, groups)
+
+
+def test_users_get_filters_by_online_date_range(access_token):
+    core, groups = setup_groups(access_token, 1)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    recent_online_at = now - timedelta(days=2)
+    old_online_at = now - timedelta(days=20)
+    recent_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={"username": unique_name("test_user_online_recent")},
+    )
+    old_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={"username": unique_name("test_user_online_old")},
+    )
+    never_online_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={"username": unique_name("test_user_online_never")},
+    )
+
+    try:
+        set_user_online_at(recent_user["username"], recent_online_at)
+        set_user_online_at(old_user["username"], old_online_at)
+
+        response = client.get(
+            "/api/users",
+            headers=auth_headers(access_token),
+            params={
+                "online_after": (now - timedelta(days=7)).isoformat(),
+                "online_before": now.isoformat(),
+            },
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        listed_usernames = {user["username"] for user in response.json()["users"]}
+        assert recent_user["username"] in listed_usernames
+        assert old_user["username"] not in listed_usernames
+        assert never_online_user["username"] not in listed_usernames
+    finally:
+        delete_user(access_token, recent_user["username"])
+        delete_user(access_token, old_user["username"])
+        delete_user(access_token, never_online_user["username"])
+        cleanup_groups(access_token, core, groups)
+
+
+def test_users_get_filters_by_online_users(access_token):
+    core, groups = setup_groups(access_token, 1)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    online_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={"username": unique_name("test_user_online_current")},
+    )
+    offline_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={"username": unique_name("test_user_online_offline")},
+    )
+    never_online_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={"username": unique_name("test_user_online_missing")},
+    )
+
+    try:
+        set_user_online_at(online_user["username"], now - timedelta(seconds=30))
+        set_user_online_at(offline_user["username"], now - timedelta(minutes=5))
+
+        response = client.get(
+            "/api/users",
+            headers=auth_headers(access_token),
+            params={"online": True},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        listed_usernames = {user["username"] for user in response.json()["users"]}
+        assert online_user["username"] in listed_usernames
+        assert offline_user["username"] not in listed_usernames
+        assert never_online_user["username"] not in listed_usernames
+    finally:
+        delete_user(access_token, online_user["username"])
+        delete_user(access_token, offline_user["username"])
+        delete_user(access_token, never_online_user["username"])
+        cleanup_groups(access_token, core, groups)
+
+
+def test_users_get_filters_by_no_expire(access_token):
+    core, groups = setup_groups(access_token, 1)
+    no_expire_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={
+            "username": unique_name("test_user_no_expire"),
+        },
+    )
+    expiring_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={
+            "username": unique_name("test_user_with_expire"),
+            "expire": (datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=30)).isoformat(),
+        },
+    )
+
+    try:
+        response = client.get(
+            "/api/users",
+            headers=auth_headers(access_token),
+            params={"no_expire": True},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        listed_usernames = {user["username"] for user in response.json()["users"]}
+        assert no_expire_user["username"] in listed_usernames
+        assert expiring_user["username"] not in listed_usernames
+    finally:
+        delete_user(access_token, no_expire_user["username"])
+        delete_user(access_token, expiring_user["username"])
+        cleanup_groups(access_token, core, groups)
+
+
+def test_users_get_filters_by_admin_ids(access_token):
+    core, groups = setup_groups(access_token, 1)
+    admin_a = create_admin(access_token, is_sudo=False)
+    admin_b = create_admin(access_token, is_sudo=False)
+    user_a = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={"username": unique_name("test_user_admin_id_a")},
+    )
+    user_b = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={"username": unique_name("test_user_admin_id_b")},
+    )
+
+    try:
+        set_owner_a = client.put(
+            f"/api/user/{user_a['username']}/set_owner",
+            headers=auth_headers(access_token),
+            params={"admin_username": admin_a["username"]},
+        )
+        assert set_owner_a.status_code == status.HTTP_200_OK
+
+        set_owner_b = client.put(
+            f"/api/user/{user_b['username']}/set_owner",
+            headers=auth_headers(access_token),
+            params={"admin_username": admin_b["username"]},
+        )
+        assert set_owner_b.status_code == status.HTTP_200_OK
+
+        response = client.get(
+            "/api/users",
+            headers=auth_headers(access_token),
+            params={"admin_ids": admin_a["id"]},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        listed_usernames = {user["username"] for user in response.json()["users"]}
+        assert user_a["username"] in listed_usernames
+        assert user_b["username"] not in listed_usernames
+    finally:
+        delete_user(access_token, user_a["username"])
+        delete_user(access_token, user_b["username"])
+        delete_admin(access_token, admin_a["username"])
+        delete_admin(access_token, admin_b["username"])
+        cleanup_groups(access_token, core, groups)
+
+
+def test_users_get_filters_by_data_limit_reset_strategy(access_token):
+    core, groups = setup_groups(access_token, 1)
+    daily_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={
+            "username": unique_name("test_user_reset_daily"),
+            "data_limit": 1024,
+            "data_limit_reset_strategy": "day",
+        },
+    )
+    no_reset_user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={
+            "username": unique_name("test_user_reset_no_reset"),
+            "data_limit": 1024,
+            "data_limit_reset_strategy": "no_reset",
+        },
+    )
+
+    try:
+        response = client.get(
+            "/api/users",
+            headers=auth_headers(access_token),
+            params={"data_limit_reset_strategy": "day"},
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        listed_usernames = {user["username"] for user in response.json()["users"]}
+        assert daily_user["username"] in listed_usernames
+        assert no_reset_user["username"] not in listed_usernames
+    finally:
+        delete_user(access_token, daily_user["username"])
+        delete_user(access_token, no_reset_user["username"])
+        cleanup_groups(access_token, core, groups)
+
+
 def test_user_subscriptions(access_token):
     """Test that the user subscriptions route is accessible."""
     user_subscription_formats = [
@@ -198,6 +641,162 @@ def test_user_subscriptions(access_token):
         cleanup_groups(access_token, core, groups)
 
 
+def test_user_routes_by_id_and_by_username(access_token):
+    core, groups = setup_groups(access_token, 1)
+    user = create_user(access_token, group_ids=[groups[0]["id"]], payload={"username": unique_name("id_routes_user")})
+    try:
+        by_id_get = client.get(f"/api/user/by-id/{user['id']}", headers=auth_headers(access_token))
+        assert by_id_get.status_code == status.HTTP_200_OK
+        assert by_id_get.json()["username"] == user["username"]
+
+        by_username_get = client.get(f"/api/user/by-username/{user['username']}", headers=auth_headers(access_token))
+        assert by_username_get.status_code == status.HTTP_200_OK
+        assert by_username_get.json()["id"] == user["id"]
+
+        patch_payload = {"note": "updated via by-id"}
+        by_id_modify = client.put(
+            f"/api/user/by-id/{user['id']}",
+            headers=auth_headers(access_token),
+            json=patch_payload,
+        )
+        assert by_id_modify.status_code == status.HTTP_200_OK
+        assert by_id_modify.json()["note"] == patch_payload["note"]
+
+        by_username_usage = client.get(
+            f"/api/user/by-username/{user['username']}/usage",
+            headers=auth_headers(access_token),
+            params={"period": "hour"},
+        )
+        assert by_username_usage.status_code == status.HTTP_200_OK
+    finally:
+        delete_user(access_token, user["username"])
+        cleanup_groups(access_token, core, groups)
+
+
+def test_get_users_count_metric_passes_filters(access_token, monkeypatch):
+    start = datetime(2024, 2, 1, tzinfo=timezone.utc)
+    end = start + timedelta(days=7)
+    counts = UserCountMetricStatsList(
+        metric=UserCountMetric.online,
+        start=start,
+        end=end,
+        period=Period.day,
+        stats={5: [UserCountMetricStat(count=2, period_start=start)]},
+    )
+    operator = MagicMock()
+    operator.get_users_count_metric = AsyncMock(return_value=counts)
+    monkeypatch.setattr("app.routers.user.user_operator", operator)
+
+    response = client.get(
+        "/api/users/counts/online",
+        headers=auth_headers(access_token),
+        params=[
+            ("start", start.isoformat()),
+            ("end", end.isoformat()),
+            ("period", "day"),
+            ("node_id", "5"),
+            ("group_by_node", "true"),
+            ("admin", "admin-a"),
+            ("admin", "admin-b"),
+        ],
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == counts.model_dump(mode="json")
+
+    awaited_kwargs = operator.get_users_count_metric.await_args.kwargs
+    assert awaited_kwargs["metric"] == UserCountMetric.online
+    query = awaited_kwargs["query"]
+    assert query.owner == ["admin-a", "admin-b"]
+    assert query.node_id == 5
+    assert query.group_by_node is True
+    assert query.period == Period.day
+    assert query.start == start
+    assert query.end == end
+
+
+def test_get_users_count_metric_rejects_status_metric_node_scope(access_token, monkeypatch):
+    operator = MagicMock()
+    operator.get_users_count_metric = AsyncMock()
+    monkeypatch.setattr("app.routers.user.user_operator", operator)
+
+    response = client.get(
+        "/api/users/counts/expired",
+        headers=auth_headers(access_token),
+        params={"period": "day", "node_id": "5"},
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "Only online user counts" in response.json()["detail"]
+    operator.get_users_count_metric.assert_not_called()
+
+
+def test_subscription_url_new_token_and_legacy_compatibility(access_token):
+    core, groups = setup_groups(access_token, 1)
+    hosts = create_hosts_for_inbounds(access_token)
+    user = create_user(
+        access_token,
+        group_ids=[group["id"] for group in groups],
+        payload={"username": unique_name("legacy_sub_user")},
+    )
+    try:
+        current_token_url = user["subscription_url"]
+        current_links = client.get(f"{current_token_url}/links")
+        assert current_links.status_code == status.HTTP_200_OK
+
+        legacy_token = _build_legacy_subscription_token(user["username"])
+        legacy_token_url = f"{current_token_url.rsplit('/', 1)[0]}/{legacy_token}"
+        legacy_links = client.get(f"{legacy_token_url}/links")
+        assert legacy_links.status_code == status.HTTP_200_OK
+    finally:
+        delete_user(access_token, user["username"])
+        for host in hosts:
+            client.delete(f"/api/host/{host['id']}", headers=auth_headers(access_token))
+        cleanup_groups(access_token, core, groups)
+
+
+def test_subscription_uses_inbound_flow_for_vless_udp443(access_token):
+    """Inbound flow should be used even when user proxy settings do not define one."""
+    config = deepcopy(XRAY_CONFIG)
+    inbound = next(item for item in config["inbounds"] if item["tag"] == "VLESS TCP REALITY")
+    inbound["tag"] = unique_name("vless_flow_udp443")
+    inbound["settings"]["flow"] = "xtls-rprx-vision-udp443"
+
+    core = create_core(access_token, name=unique_name("flow_core"), config=config)
+    group = create_group(access_token, name=unique_name("flow_group"), inbound_tags=[inbound["tag"]])
+    host_response = client.post(
+        "/api/host",
+        headers=auth_headers(access_token),
+        json={
+            "remark": unique_name("flow_host"),
+            "address": ["127.0.0.1"],
+            "port": 443,
+            "inbound_tag": inbound["tag"],
+            "priority": 1,
+            "sni": ["example.com"],
+        },
+    )
+    assert host_response.status_code == status.HTTP_201_CREATED
+    host = host_response.json()
+    user = create_user(
+        access_token,
+        group_ids=[group["id"]],
+        payload={"username": unique_name("test_flow_subscription")},
+    )
+
+    try:
+        assert "flow" not in user["proxy_settings"]["vless"]
+
+        response = client.get(f"{user['subscription_url']}/links")
+        assert response.status_code == status.HTTP_200_OK
+        assert "flow=xtls-rprx-vision-udp443" in response.text
+    finally:
+        delete_user(access_token, user["username"])
+        client.delete(f"/api/host/{host['id']}", headers=auth_headers(access_token))
+        delete_group(access_token, group["id"])
+        delete_core(access_token, core["id"])
+
+
 def test_user_sub_update_user_agent(access_token):
     """Test that the user sub_update user_agent is accessible."""
     core, groups = setup_groups(access_token, 1)
@@ -209,13 +808,32 @@ def test_user_sub_update_user_agent(access_token):
     try:
         url = user["subscription_url"]
         user_agent = "v2rayNG/1.9.46 This is PasarGuard Test"
-        client.get(url, headers={"User-Agent": user_agent})
+        ip = "203.0.113.10"
+        client.get(url, headers={"User-Agent": user_agent, "X-Forwarded-For": ip})
         response = client.get(
             f"/api/user/{user['username']}/sub_update",
             headers={"Authorization": f"Bearer {access_token}"},
         )
         assert response.status_code == status.HTTP_200_OK
         assert response.json()["updates"][0]["user_agent"] == user_agent
+        assert response.json()["updates"][0]["ip"] == ip
+    finally:
+        delete_user(access_token, user["username"])
+        cleanup_groups(access_token, core, groups)
+
+
+def test_user_subscription_info_returns_request_ip(access_token):
+    core, groups = setup_groups(access_token, 1)
+    user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={"username": unique_name("test_subscription_info_ip")},
+    )
+    try:
+        ip = "198.51.100.7"
+        response = client.get(f"{user['subscription_url']}/info", headers={"X-Forwarded-For": ip})
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["ip"] == ip
     finally:
         delete_user(access_token, user["username"])
         cleanup_groups(access_token, core, groups)
@@ -378,6 +996,59 @@ def test_wireguard_subscription_outputs_are_consistent(access_token):
         delete_core(access_token, core["id"])
 
 
+def test_wireguard_disabled_skips_peer_ip_allocation_and_subscription_outputs(access_token, monkeypatch):
+    monkeypatch.setattr("config.wireguard_settings.enabled", False)
+
+    interface_private_key, _ = generate_wireguard_keypair()
+    interface_name = unique_name("wg_disabled")
+    endpoint = "198.51.100.20"
+
+    core = create_core(
+        access_token,
+        name=unique_name("wireguard_disabled_core"),
+        config={
+            "interface_name": interface_name,
+            "private_key": interface_private_key,
+            "listen_port": 51820,
+            "address": ["10.40.0.1/24"],
+        },
+        type="wg",
+        fallbacks=[],
+    )
+    host_response = client.post(
+        "/api/host",
+        headers=auth_headers(access_token),
+        json={
+            "remark": "Disabled WG {USERNAME}",
+            "address": [endpoint],
+            "port": 51820,
+            "inbound_tag": interface_name,
+            "priority": 1,
+        },
+    )
+    assert host_response.status_code == status.HTTP_201_CREATED
+    host_id = host_response.json()["id"]
+    group = create_group(access_token, name=unique_name("wg_disabled_group"), inbound_tags=[interface_name])
+    user = create_user(access_token, group_ids=[group["id"]], payload={"username": unique_name("wg_disabled_user")})
+
+    try:
+        assert user["proxy_settings"]["wireguard"]["private_key"]
+        assert user["proxy_settings"]["wireguard"]["public_key"]
+        assert user["proxy_settings"]["wireguard"]["peer_ips"] == []
+
+        links_response = client.get(f"{user['subscription_url']}/links")
+        wireguard_response = client.get(f"{user['subscription_url']}/wireguard")
+
+        assert links_response.status_code == status.HTTP_200_OK
+        assert "wireguard://" not in links_response.text
+        assert wireguard_response.status_code == status.HTTP_406_NOT_ACCEPTABLE
+    finally:
+        delete_user(access_token, user["username"])
+        delete_group(access_token, group["id"])
+        client.delete(f"/api/host/{host_id}", headers=auth_headers(access_token))
+        delete_core(access_token, core["id"])
+
+
 def test_xray_subscription_includes_wireguard_outbound(access_token):
     interface_private_key, _ = generate_wireguard_keypair()
     interface_public_key = get_wireguard_public_key(interface_private_key)
@@ -458,8 +1129,27 @@ def test_xray_subscription_includes_wireguard_outbound(access_token):
 
 
 def test_xray_subscription_uses_host_specific_template_override(access_token):
-    core = create_core(access_token)
-    inbound = get_inbounds(access_token)[0]
+    # Use a unique inbound tag so other tests' hosts can't affect config count.
+    unique_inbound = unique_name("xray_override_inbound")
+    core = create_core(
+        access_token,
+        config={
+            "log": {"loglevel": "info"},
+            "inbounds": [
+                {
+                    "tag": unique_inbound,
+                    "listen": "0.0.0.0",
+                    "port": 2087,
+                    "protocol": "vmess",
+                    "settings": {"clients": []},
+                    "streamSettings": {"network": "ws", "wsSettings": {"path": "/yourpath"}, "security": "none"},
+                }
+            ],
+            "outbounds": [{"protocol": "freedom", "tag": "DIRECT"}, {"protocol": "blackhole", "tag": "BLOCK"}],
+        },
+        fallbacks=[],
+    )
+    inbound = unique_inbound
     override_template = create_client_template(
         access_token,
         name=unique_name("xray_host_override_template"),
@@ -511,8 +1201,27 @@ def test_xray_subscription_uses_host_specific_template_override(access_token):
 
 
 def test_xray_subscription_template_override_isolated_per_host(access_token):
-    core = create_core(access_token)
-    inbound = get_inbounds(access_token)[0]
+    # Use a unique inbound tag so other tests' hosts can't affect config count.
+    unique_inbound = unique_name("xray_isolated_inbound")
+    core = create_core(
+        access_token,
+        config={
+            "log": {"loglevel": "info"},
+            "inbounds": [
+                {
+                    "tag": unique_inbound,
+                    "listen": "0.0.0.0",
+                    "port": 2087,
+                    "protocol": "vmess",
+                    "settings": {"clients": []},
+                    "streamSettings": {"network": "ws", "wsSettings": {"path": "/yourpath"}, "security": "none"},
+                }
+            ],
+            "outbounds": [{"protocol": "freedom", "tag": "DIRECT"}, {"protocol": "blackhole", "tag": "BLOCK"}],
+        },
+        fallbacks=[],
+    )
+    inbound = unique_inbound
     override_template = create_client_template(
         access_token,
         name=unique_name("xray_host_isolated_template"),
@@ -972,6 +1681,17 @@ def test_format_rule_response_headers_supports_strings_and_json():
     assert headers["x-json"] == '{"enabled":true,"count":2}'
 
 
+def test_format_announce_supports_dynamic_variables():
+    sub_settings = Subscription(rules=[], announce="Hello {USERNAME}, {DATA_LEFT} left")
+
+    announce = SubscriptionOperation._format_announce(
+        sub_settings,
+        {"USERNAME": "alice", "DATA_LEFT": "1 GB"},
+    )
+
+    assert announce == "Hello alice, 1 GB left"
+
+
 def test_detect_client_rule_matches_user_agent():
     rule = SubRule(
         pattern=r"^PasarGuardRuleHeaderClient$",
@@ -1022,6 +1742,53 @@ def test_reset_user_usage(access_token):
         )
         assert response.status_code == status.HTTP_200_OK
     finally:
+        delete_user(access_token, user["username"])
+        cleanup_groups(access_token, core, groups)
+
+
+def test_reset_user_usage_only_cleans_chart_data_when_enabled(access_token):
+    """Test that user reset preserves chart data unless env cleanup is enabled."""
+    core, groups = setup_groups(access_token, 1)
+    user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={"username": unique_name("test_user_reset_chart_data")},
+    )
+
+    async def _add_chart_row():
+        async with TestSession() as session:
+            session.add(
+                NodeUserUsage(
+                    user_id=user["id"],
+                    node_id=None,
+                    created_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+                    used_traffic=123,
+                )
+            )
+            await session.commit()
+
+    previous_clean_chart_data = usage_settings.reset_user_usage_clean_chart_data
+    try:
+        usage_settings.reset_user_usage_clean_chart_data = False
+        asyncio.run(_add_chart_row())
+        assert count_user_chart_rows(user["id"]) == 1
+
+        response = client.post(
+            f"/api/user/by-id/{user['id']}/reset",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert count_user_chart_rows(user["id"]) == 1
+
+        usage_settings.reset_user_usage_clean_chart_data = True
+        response = client.post(
+            f"/api/user/by-id/{user['id']}/reset",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert count_user_chart_rows(user["id"]) == 0
+    finally:
+        usage_settings.reset_user_usage_clean_chart_data = previous_clean_chart_data
         delete_user(access_token, user["username"])
         cleanup_groups(access_token, core, groups)
 
@@ -1159,6 +1926,51 @@ def test_modify_user_with_template(access_token):
         assert response.json()["status"] == template["status"]
     finally:
         delete_user(access_token, username)
+        delete_user_template(access_token, template["id"])
+        cleanup_groups(access_token, core, groups)
+
+
+def test_modify_user_with_template_does_not_reset_usage_when_hwid_limit_is_invalid(access_token):
+    core, groups = setup_groups(access_token, 1)
+    template = create_user_template(access_token, group_ids=[groups[0]["id"]], hwid_limit=2, reset_usages=True)
+    user = create_user(
+        access_token,
+        group_ids=[groups[0]["id"]],
+        payload={"username": unique_name("test_user_template_hwid_limit"), "hwid_limit": 3},
+    )
+
+    async def _seed_user_state():
+        async with TestSession() as session:
+            db_user = (await session.execute(select(User).where(User.id == user["id"]))).scalar_one()
+            db_user.used_traffic = 1234
+            await register_user_hwid(session, user["id"], "device-1")
+            await register_user_hwid(session, user["id"], "device-2")
+            await register_user_hwid(session, user["id"], "device-3")
+            await session.refresh(db_user)
+            return db_user.used_traffic
+
+    try:
+        assert asyncio.run(_seed_user_state()) == 1234
+
+        response = client.put(
+            f"/api/user/from_template/{user['username']}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"user_template_id": template["id"]},
+        )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "Cannot lower HWID limit below current device count" in response.json()["detail"]
+
+        async def _get_user_state():
+            async with TestSession() as session:
+                db_user = (await session.execute(select(User).where(User.id == user["id"]))).scalar_one()
+                return db_user.used_traffic, db_user.hwid_limit
+
+        used_traffic, hwid_limit = asyncio.run(_get_user_state())
+        assert used_traffic == 1234
+        assert hwid_limit == 3
+    finally:
+        delete_user(access_token, user["username"])
         delete_user_template(access_token, template["id"])
         cleanup_groups(access_token, core, groups)
 
@@ -1307,6 +2119,37 @@ def test_bulk_create_users_from_template_random_with_username_rejected(access_to
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
         assert "username must be null when strategy is 'random'" in response.text
     finally:
+        delete_user_template(access_token, template["id"])
+        cleanup_groups(access_token, core, groups)
+
+
+def test_bulk_apply_template_to_users(access_token):
+    core, groups = setup_groups(access_token, 1)
+    template = create_user_template(access_token, group_ids=[groups[0]["id"]])
+
+    user1 = create_user(access_token, username=unique_name("bulk_apply_tmpl_u1"))
+    user2 = create_user(access_token, username=unique_name("bulk_apply_tmpl_u2"))
+
+    try:
+        response = client.post(
+            "/api/users/bulk/apply_template",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={
+                "ids": [user1["id"], user2["id"]],
+                "user_template_id": template["id"],
+            },
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["count"] == 2
+
+        for username in (user1["username"], user2["username"]):
+            user_response = client.get(f"/api/user/{username}", headers={"Authorization": f"Bearer {access_token}"})
+            assert user_response.status_code == status.HTTP_200_OK
+            assert user_response.json()["data_limit"] == template["data_limit"]
+            assert user_response.json()["status"] == template["status"]
+    finally:
+        delete_user(access_token, user1["username"])
+        delete_user(access_token, user2["username"])
         delete_user_template(access_token, template["id"])
         cleanup_groups(access_token, core, groups)
 

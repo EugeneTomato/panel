@@ -23,7 +23,10 @@ class SystemCLI(BaseCLI):
             f"[bold]System Statistics[/bold]\n\n"
             f"CPU Usage: [green]{stats.cpu_usage:.1f}%[/green]\n"
             f"Memory Usage: [green]{stats.mem_used / stats.mem_total * 100:.1f}%[/green] "
+            f"Disk Usage: [green]{stats.disk_used / stats.disk_total * 100:.1f}%[/green] "
             f"([cyan]{readable_size(stats.mem_used)}[/cyan] / [cyan]{readable_size(stats.mem_total)}[/cyan])\n"
+            f"Disk Usage: [green]{stats.disk_used / stats.disk_total * 100:.1f}%[/green] "
+            f"([cyan]{readable_size(stats.disk_used)}[/cyan] / [cyan]{readable_size(stats.disk_total)}[/cyan])\n"
             f"CPU Cores: [magenta]{stats.cpu_cores}[/magenta]\n"
             f"Total Users: [blue]{stats.total_user}[/blue]\n"
             f"Active Users: [green]{stats.active_users}[/green]\n"
@@ -33,7 +36,7 @@ class SystemCLI(BaseCLI):
             f"Expired Users: [red]{stats.expired_users}[/red]\n"
             f"Limited Users: [yellow]{stats.limited_users}[/yellow]\n"
             f"Data Usage (In): [blue]{readable_size(stats.incoming_bandwidth)}[/blue]\n"
-            f"Data Usage (Out): [blue]{readable_size(stats.outgoing_bandwidth)}[/blue]"
+            f"Data Usage (Out): [blue]{readable_size(stats.outgoing_bandwidth)}[/blue]\n"
         )
 
         panel = Panel(

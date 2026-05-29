@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
@@ -23,15 +24,21 @@ from app.db.models import (
     User,
 )
 from app.models.core import CoreCreate
+from app.models.admin import AdminDetails
 from app.models.node import NodeCreate, NodeModify, NodeResponse, NodeSettings, NodesResponse
 from app.models.stats import (
     NodeRealtimeStats,
     NodeStats,
     NodeStatsList,
+    UserCountMetric,
+    UserCountMetricStat,
+    UserCountMetricStatsList,
     NodeUsageStat,
     NodeUsageStatsList,
     Period,
 )
+from app.operation import OperatorType
+from app.operation.node import NodeOperation
 from tests.api import TestSession, client
 from tests.api.helpers import auth_headers, unique_name
 from tests.api.sample_data import XRAY_CONFIG
@@ -77,6 +84,7 @@ def sample_node_response(**overrides) -> NodeResponse:
         "downlink": 0,
         "lifetime_uplink": 0,
         "lifetime_downlink": 0,
+        "proxy_url": "socks5://127.0.0.1:1080",
     }
     data.update(overrides)
     return NodeResponse(**data)
@@ -99,6 +107,7 @@ def node_create_payload(**overrides) -> dict:
         "reset_time": -1,
         "default_timeout": 10,
         "internal_timeout": 15,
+        "proxy_url": "socks5://127.0.0.1:1080",
     }
     payload.update(overrides)
     return payload
@@ -152,6 +161,18 @@ def usage_stats_payload() -> NodeUsageStatsList:
     )
 
 
+def user_count_metric_stats_payload() -> UserCountMetricStatsList:
+    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+    return UserCountMetricStatsList(
+        metric=UserCountMetric.online,
+        start=start,
+        end=end,
+        period=Period.day,
+        stats={1: [UserCountMetricStat(count=3, period_start=start)]},
+    )
+
+
 def node_stats_payload() -> NodeStatsList:
     start = datetime(2024, 1, 1, tzinfo=timezone.utc)
     end = start + timedelta(hours=2)
@@ -186,6 +207,7 @@ def realtime_stats_payload() -> NodeRealtimeStats:
         cpu_usage=23.5,
         incoming_bandwidth_speed=512,
         outgoing_bandwidth_speed=256,
+        uptime=50,
     )
 
 
@@ -199,12 +221,17 @@ def node_operator_mock(monkeypatch: pytest.MonkeyPatch):
         "create_node",
         "get_validated_node",
         "modify_node",
+        "bulk_set_nodes_status",
+        "bulk_reset_nodes_usage",
+        "bulk_restart_nodes",
+        "bulk_update_nodes",
         "reset_node_usage",
         "restart_node",
         "sync_node_users",
         "remove_node",
         "get_node_stats_periodic",
         "get_node_system_stats",
+        "get_user_count_metric",
     ]
     for name in async_methods:
         setattr(operator, name, AsyncMock(name=name))
@@ -248,11 +275,53 @@ def test_get_usage_passes_filters(access_token, node_operator_mock):
     assert response.json() == usage.model_dump(mode="json")
 
     awaited_kwargs = node_operator_mock.get_usage.await_args.kwargs
-    assert awaited_kwargs["node_id"] == 5
-    assert awaited_kwargs["group_by_node"] is True
-    assert awaited_kwargs["period"] == Period.day
-    assert awaited_kwargs["start"] == start
-    assert awaited_kwargs["end"] == end
+    query = awaited_kwargs["query"]
+    assert query.node_id == 5
+    assert query.group_by_node is True
+    assert query.period == Period.day
+    assert query.start == start
+    assert query.end == end
+
+
+def test_get_user_count_metric_passes_filters(access_token, node_operator_mock):
+    counts = user_count_metric_stats_payload()
+    node_operator_mock.get_user_count_metric.return_value = counts
+    start = datetime(2024, 2, 1, tzinfo=timezone.utc)
+    end = start + timedelta(days=7)
+    response = client.get(
+        "/api/node/user_counts/online",
+        headers=auth_headers(access_token),
+        params={
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "period": "day",
+            "node_id": 5,
+            "group_by_node": True,
+        },
+    )
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == counts.model_dump(mode="json")
+
+    awaited_kwargs = node_operator_mock.get_user_count_metric.await_args.kwargs
+    assert awaited_kwargs["metric"] == UserCountMetric.online
+    query = awaited_kwargs["query"]
+    assert query.node_id == 5
+    assert query.group_by_node is True
+    assert query.period == Period.day
+    assert query.start == start
+    assert query.end == end
+
+
+def test_get_user_count_metric_rejects_status_metric_node_scope(access_token, node_operator_mock):
+    response = client.get(
+        "/api/node/user_counts/limited",
+        headers=auth_headers(access_token),
+        params={"period": "day", "group_by_node": True},
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "Only online user counts" in response.json()["detail"]
+    node_operator_mock.get_user_count_metric.assert_not_called()
 
 
 def test_get_nodes_forwards_query_params(access_token, node_operator_mock):
@@ -275,13 +344,14 @@ def test_get_nodes_forwards_query_params(access_token, node_operator_mock):
     assert response.json() == nodes_response.model_dump(mode="json")
 
     awaited_kwargs = node_operator_mock.get_db_nodes.await_args.kwargs
-    assert awaited_kwargs["core_id"] == 2
-    assert awaited_kwargs["offset"] == 5
-    assert awaited_kwargs["limit"] == 25
-    assert awaited_kwargs["enabled"] is True
-    assert awaited_kwargs["ids"] == [1, 2]
-    assert awaited_kwargs["search"] == "test"
-    assert awaited_kwargs["status"] == [NodeStatus.connected, NodeStatus.error]
+    query = awaited_kwargs["query"]
+    assert query.core_id == 2
+    assert query.offset == 5
+    assert query.limit == 25
+    assert query.enabled is True
+    assert query.ids == [1, 2]
+    assert query.search == "test"
+    assert query.status == [NodeStatus.connected, NodeStatus.error]
 
 
 def test_reconnect_all_nodes_triggers_restart(access_token, node_operator_mock):
@@ -388,6 +458,83 @@ def test_remove_node(access_token, node_operator_mock):
     assert awaited_kwargs["node_id"] == 6
 
 
+def test_bulk_disable_nodes(access_token, node_operator_mock):
+    node_operator_mock.bulk_set_nodes_status.return_value = {"nodes": ["node-a", "node-b"], "count": 2}
+
+    response = client.post(
+        "/api/nodes/bulk/disable",
+        headers=auth_headers(access_token),
+        json={"ids": [1, 2]},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == {"nodes": ["node-a", "node-b"], "count": 2}
+    await_args = node_operator_mock.bulk_set_nodes_status.await_args
+    assert await_args.args[1].ids == [1, 2]
+    assert await_args.kwargs["status"] == NodeStatus.disabled
+
+
+def test_bulk_enable_nodes(access_token, node_operator_mock):
+    node_operator_mock.bulk_set_nodes_status.return_value = {"nodes": ["node-a"], "count": 1}
+
+    response = client.post(
+        "/api/nodes/bulk/enable",
+        headers=auth_headers(access_token),
+        json={"ids": [3]},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == {"nodes": ["node-a"], "count": 1}
+    await_args = node_operator_mock.bulk_set_nodes_status.await_args
+    assert await_args.args[1].ids == [3]
+    assert await_args.kwargs["status"] == NodeStatus.connected
+
+
+def test_bulk_reset_nodes_usage(access_token, node_operator_mock):
+    node_operator_mock.bulk_reset_nodes_usage.return_value = {"nodes": ["node-a"], "count": 1}
+
+    response = client.post(
+        "/api/nodes/bulk/reset",
+        headers=auth_headers(access_token),
+        json={"ids": [4]},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == {"nodes": ["node-a"], "count": 1}
+    await_args = node_operator_mock.bulk_reset_nodes_usage.await_args
+    assert await_args.args[1].ids == [4]
+
+
+def test_bulk_reconnect_nodes(access_token, node_operator_mock):
+    node_operator_mock.bulk_restart_nodes.return_value = {"nodes": ["node-a"], "count": 1}
+
+    response = client.post(
+        "/api/nodes/bulk/reconnect",
+        headers=auth_headers(access_token),
+        json={"ids": [5]},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == {"nodes": ["node-a"], "count": 1}
+    await_args = node_operator_mock.bulk_restart_nodes.await_args
+    assert await_args.args[1].ids == [5]
+
+
+def test_bulk_update_nodes(access_token, node_operator_mock):
+    node_operator_mock.bulk_update_nodes.return_value = {"nodes": ["node-a"], "count": 1}
+
+    response = client.post(
+        "/api/nodes/bulk/update",
+        headers=auth_headers(access_token),
+        json={"ids": [6]},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == {"nodes": ["node-a"], "count": 1}
+    await_args = node_operator_mock.bulk_update_nodes.await_args
+    assert await_args.args[1].ids == [6]
+
+
 def test_get_node_stats(access_token, node_operator_mock):
     stats = node_stats_payload()
     node_operator_mock.get_node_stats_periodic.return_value = stats
@@ -402,9 +549,10 @@ def test_get_node_stats(access_token, node_operator_mock):
     assert response.json() == stats.model_dump(mode="json")
     awaited_kwargs = node_operator_mock.get_node_stats_periodic.await_args.kwargs
     assert awaited_kwargs["node_id"] == 8
-    assert awaited_kwargs["start"] == start
-    assert awaited_kwargs["end"] == end
-    assert awaited_kwargs["period"] == Period.hour
+    query = awaited_kwargs["query"]
+    assert query.start == start
+    assert query.end == end
+    assert query.period == Period.hour
 
 
 def test_realtime_node_stats(access_token, node_operator_mock):
@@ -415,6 +563,52 @@ def test_realtime_node_stats(access_token, node_operator_mock):
     assert response.json() == realtime_stats.model_dump()
     awaited_kwargs = node_operator_mock.get_node_system_stats.await_args.kwargs
     assert awaited_kwargs["node_id"] == 12
+
+
+@pytest.mark.asyncio
+async def test_node_create_and_modify_schedule_background_reconnect(monkeypatch: pytest.MonkeyPatch):
+    operator = NodeOperation(operator_type=OperatorType.API)
+    scheduled_node_ids: list[int] = []
+
+    async def record_background_connect(node_id: int) -> None:
+        scheduled_node_ids.append(node_id)
+
+    monkeypatch.setattr(operator, "_update_node_impl", AsyncMock())
+    monkeypatch.setattr(operator, "_connect_single_node_background", record_background_connect)
+    monkeypatch.setattr("app.operation.node.notification.create_node", AsyncMock())
+    monkeypatch.setattr("app.operation.node.notification.modify_node", AsyncMock())
+
+    admin = AdminDetails(username="admin", is_sudo=True)
+    async with TestSession() as session:
+        core = await create_core_config(session, core_create_model(unique_name("core_node_background")))
+        core_id = inspect(core).identity[0]
+        node_id: int | None = None
+        try:
+            created = await operator.create_node(
+                session,
+                NodeCreate(**node_create_payload(name=unique_name("node_background"), core_config_id=core_id)),
+                admin,
+            )
+            node_id = created.id
+            await asyncio.sleep(0)
+
+            modified = await operator.modify_node(
+                session,
+                created.id,
+                NodeModify(name=unique_name("node_background_modified")),
+                admin,
+            )
+            await asyncio.sleep(0)
+
+            assert scheduled_node_ids == [created.id, modified.id]
+        finally:
+            if node_id is not None:
+                db_node = await session.get(Node, node_id)
+                if db_node:
+                    await db_remove_node(session, db_node)
+            db_core = await session.get(CoreConfig, core_id)
+            if db_core:
+                await remove_core_config(session, db_core)
 
 
 # Tests for /api/nodes/simple endpoint

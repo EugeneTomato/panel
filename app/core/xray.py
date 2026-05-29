@@ -9,7 +9,16 @@ from typing import Union
 import commentjson
 
 from app.models.core import CoreType
+from app.models.protocol import ProxyProtocol
 from app.utils.crypto import get_cert_SANs, get_x25519_public_key
+
+
+def _protocols_from_inbounds_by_tag(inbounds_by_tag: dict[str, dict]) -> frozenset[ProxyProtocol]:
+    return frozenset(
+        protocol
+        for inbound in inbounds_by_tag.values()
+        if (protocol := ProxyProtocol.from_value(inbound["protocol"])) is not None
+    )
 
 
 class XRayConfig(dict):
@@ -45,6 +54,7 @@ class XRayConfig(dict):
         self._inbounds = []
         self._inbounds_by_tag = {}
         self._fallbacks_inbound = []
+        self._protocols: frozenset[ProxyProtocol] = frozenset()
 
         # Registery pattern for network handlers, making it easy to add support for new network types in the future
         self.network_handlers = {
@@ -209,7 +219,7 @@ class XRayConfig(dict):
         try:
             settings["sids"] = tls_settings.get("shortIds")
             settings["sids"][0]  # check if there is any shortIds
-        except (IndexError, TypeError):
+        except IndexError, TypeError:
             raise ValueError(f"You need to define at least one shortID in realitySettings of {inbound_tag}")
         try:
             settings["spx"] = tls_settings.get("spiderX")
@@ -284,10 +294,34 @@ class XRayConfig(dict):
 
     def _handle_xhttp_settings(self, net_settings: dict, settings: dict, inbound_tag: str = ""):
         """Handle XHTTP network settings."""
+        extra = net_settings.get("extra", {})
+        if not isinstance(extra, dict):
+            extra = {}
+
+        def get_xhttp_value(key: str):
+            value = extra.get(key)
+            if value is None:
+                value = net_settings.get(key)
+            return value
+
         settings["path"] = net_settings.get("path", "")
         host = net_settings.get("host", "")
         settings["host"] = [host]
         settings["mode"] = net_settings.get("mode", "auto")
+        settings["x_padding_bytes"] = get_xhttp_value("xPaddingBytes")
+        settings["x_padding_obfs_mode"] = get_xhttp_value("xPaddingObfsMode")
+        settings["x_padding_key"] = get_xhttp_value("xPaddingKey")
+        settings["x_padding_header"] = get_xhttp_value("xPaddingHeader")
+        settings["x_padding_placement"] = get_xhttp_value("xPaddingPlacement")
+        settings["x_padding_method"] = get_xhttp_value("xPaddingMethod")
+        settings["uplink_http_method"] = get_xhttp_value("uplinkHTTPMethod")
+        settings["session_placement"] = get_xhttp_value("sessionPlacement")
+        settings["session_key"] = get_xhttp_value("sessionKey")
+        settings["seq_placement"] = get_xhttp_value("seqPlacement")
+        settings["seq_key"] = get_xhttp_value("seqKey")
+        settings["uplink_data_placement"] = get_xhttp_value("uplinkDataPlacement")
+        settings["uplink_data_key"] = get_xhttp_value("uplinkDataKey")
+        settings["uplink_chunk_size"] = get_xhttp_value("uplinkChunkSize")
 
     def _handle_kcp_settings(self, net_settings: dict, settings: dict, inbound_tag: str = ""):
         """Handle KCP network settings."""
@@ -336,6 +370,7 @@ class XRayConfig(dict):
         """Resolve all inbounds and their settings."""
         for inbound in self["inbounds"]:
             self._read_inbound(inbound)
+        self._protocols = _protocols_from_inbounds_by_tag(self._inbounds_by_tag)
 
     def _read_inbound(self, inbound: dict):
         """Read an inbound and its settings."""
@@ -448,6 +483,10 @@ class XRayConfig(dict):
         return self._inbounds
 
     @property
+    def protocols(self) -> frozenset[ProxyProtocol]:
+        return self._protocols
+
+    @property
     def type(self) -> str:
         return self._type
 
@@ -479,6 +518,7 @@ class XRayConfig(dict):
             instance._inbounds = data["inbounds"]
         if "inbounds_by_tag" in data:
             instance._inbounds_by_tag = data["inbounds_by_tag"]
+        instance._protocols = _protocols_from_inbounds_by_tag(instance._inbounds_by_tag)
         return instance
 
     def copy(self):

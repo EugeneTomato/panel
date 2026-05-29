@@ -1,11 +1,26 @@
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, status
 
 from app.db import AsyncSession, get_db
 from app.models.admin import AdminDetails
-from app.models.group import BulkGroup, GroupCreate, GroupModify, GroupResponse, GroupsResponse, GroupsSimpleResponse
+from app.models.group import (
+    BulkGroup,
+    BulkGroupsActionResponse,
+    BulkGroupSelection,
+    GroupCreate,
+    GroupListQuery,
+    GroupModify,
+    GroupResponse,
+    GroupSimpleListQuery,
+    GroupsResponse,
+    GroupsSimpleResponse,
+    RemoveGroupsResponse,
+)
 from app.operation import OperatorType
 from app.operation.group import GroupOperation
 from app.utils import responses
+from .dependencies import get_group_list_query, get_group_simple_list_query
 
 from .authentication import check_sudo_admin, get_current
 
@@ -50,7 +65,9 @@ async def create_group(
     description="Retrieves a paginated list of all groups in the system. Requires admin authentication.",
 )
 async def get_all_groups(
-    offset: int = None, limit: int = None, db: AsyncSession = Depends(get_db), _: AdminDetails = Depends(get_current)
+    query: Annotated[GroupListQuery, Depends(get_group_list_query)],
+    db: AsyncSession = Depends(get_db),
+    _: AdminDetails = Depends(get_current),
 ):
     """
     Retrieve a list of all groups with optional pagination.
@@ -70,7 +87,7 @@ async def get_all_groups(
     Raises:
         401: Unauthorized - If not authenticated
     """
-    return await group_operator.get_all_groups(db, offset, limit)
+    return await group_operator.get_all_groups(db, query)
 
 
 @router.get(
@@ -80,23 +97,12 @@ async def get_all_groups(
     description="Returns only id and name for groups. Optimized for dropdowns and autocomplete.",
 )
 async def get_groups_simple(
-    offset: int = None,
-    limit: int = None,
-    search: str | None = None,
-    sort: str | None = None,
-    all: bool = False,
+    query: Annotated[GroupSimpleListQuery, Depends(get_group_simple_list_query)],
     db: AsyncSession = Depends(get_db),
     _: AdminDetails = Depends(get_current),
 ):
     """Get lightweight group list with only id and name"""
-    return await group_operator.get_groups_simple(
-        db=db,
-        offset=offset,
-        limit=limit,
-        search=search,
-        sort=sort,
-        all=all,
-    )
+    return await group_operator.get_groups_simple(db=db, query=query)
 
 
 @router.get(
@@ -191,7 +197,7 @@ async def remove_group(
     response_description="Success confirmation",
 )
 async def bulk_add_groups_to_users(
-    bulk_group: BulkGroup, db: AsyncSession = Depends(get_db), _: AdminDetails = Depends(get_current)
+    bulk_group: BulkGroup, db: AsyncSession = Depends(get_db), _: AdminDetails = Depends(check_sudo_admin)
 ):
     """
     Bulk assign groups to multiple users, users under specific admins, or all users.
@@ -214,7 +220,7 @@ async def bulk_add_groups_to_users(
     response_description="Success confirmation",
 )
 async def bulk_remove_users_from_groups(
-    bulk_group: BulkGroup, db: AsyncSession = Depends(get_db), _: AdminDetails = Depends(get_current)
+    bulk_group: BulkGroup, db: AsyncSession = Depends(get_db), _: AdminDetails = Depends(check_sudo_admin)
 ):
     """
     Bulk remove groups from multiple users, users under specific admins, or all users.
@@ -229,3 +235,45 @@ async def bulk_remove_users_from_groups(
     - Returns list of affected users (those who had groups removed)
     """
     return await group_operator.bulk_remove_groups(db, bulk_group)
+
+
+@router.post(
+    "s/bulk/delete",
+    response_model=RemoveGroupsResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_delete_groups(
+    bulk_groups: BulkGroupSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(check_sudo_admin),
+):
+    """Delete selected groups by ID."""
+    return await group_operator.bulk_remove_groups_by_id(db, bulk_groups, admin)
+
+
+@router.post(
+    "s/bulk/disable",
+    response_model=BulkGroupsActionResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_disable_groups(
+    bulk_groups: BulkGroupSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(check_sudo_admin),
+):
+    """Disable selected groups by ID."""
+    return await group_operator.bulk_set_groups_disabled(db, bulk_groups, admin, is_disabled=True)
+
+
+@router.post(
+    "s/bulk/enable",
+    response_model=BulkGroupsActionResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_enable_groups(
+    bulk_groups: BulkGroupSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(check_sudo_admin),
+):
+    """Enable selected groups by ID."""
+    return await group_operator.bulk_set_groups_disabled(db, bulk_groups, admin, is_disabled=False)

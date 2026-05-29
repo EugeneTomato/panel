@@ -29,7 +29,7 @@ from app.nats.client import setup_nats_kv
 from app.nats.message import MessageTopic
 from app.nats.router import router
 from app.utils.logger import get_logger
-from config import ROLE
+from config import runtime_settings
 from role import Role
 
 
@@ -167,7 +167,7 @@ async def _prepare_subscription_inbound_data(
     # Get VLESS encryption from inbound
     encryption = inbound_config.get("encryption", "none")
 
-    # Get flow from inbound (user can override later in share.py)
+    # Get flow from inbound for subscription generation.
     inbound_flow = inbound_config.get("flow", "")
     if inbound_flow == "none":
         inbound_flow = ""
@@ -197,20 +197,60 @@ async def _prepare_subscription_inbound_data(
             no_grpc_header=xs.no_grpc_header if xs else None,
             sc_max_each_post_bytes=xs.sc_max_each_post_bytes if xs else None,
             sc_min_posts_interval_ms=xs.sc_min_posts_interval_ms if xs else None,
-            x_padding_bytes=xs.x_padding_bytes if xs else None,
-            x_padding_obfs_mode=xs.x_padding_obfs_mode if xs else None,
-            x_padding_key=xs.x_padding_key if xs else None,
-            x_padding_header=xs.x_padding_header if xs else None,
-            x_padding_placement=xs.x_padding_placement if xs else None,
-            x_padding_method=xs.x_padding_method if xs else None,
-            uplink_http_method=xs.uplink_http_method if xs else None,
-            session_placement=xs.session_placement if xs else None,
-            session_key=xs.session_key if xs else None,
-            seq_placement=xs.seq_placement if xs else None,
-            seq_key=xs.seq_key if xs else None,
-            uplink_data_placement=xs.uplink_data_placement if xs else None,
-            uplink_data_key=xs.uplink_data_key if xs else None,
-            uplink_chunk_size=xs.uplink_chunk_size if xs else None,
+            x_padding_bytes=xs.x_padding_bytes
+            if xs and xs.x_padding_bytes is not None
+            else inbound_config.get("x_padding_bytes"),
+            x_padding_obfs_mode=(
+                xs.x_padding_obfs_mode
+                if xs and xs.x_padding_obfs_mode is not None
+                else inbound_config.get("x_padding_obfs_mode")
+            ),
+            x_padding_key=xs.x_padding_key
+            if xs and xs.x_padding_key is not None
+            else inbound_config.get("x_padding_key"),
+            x_padding_header=(
+                xs.x_padding_header
+                if xs and xs.x_padding_header is not None
+                else inbound_config.get("x_padding_header")
+            ),
+            x_padding_placement=(
+                xs.x_padding_placement
+                if xs and xs.x_padding_placement is not None
+                else inbound_config.get("x_padding_placement")
+            ),
+            x_padding_method=(
+                xs.x_padding_method
+                if xs and xs.x_padding_method is not None
+                else inbound_config.get("x_padding_method")
+            ),
+            uplink_http_method=(
+                xs.uplink_http_method
+                if xs and xs.uplink_http_method is not None
+                else inbound_config.get("uplink_http_method")
+            ),
+            session_placement=(
+                xs.session_placement
+                if xs and xs.session_placement is not None
+                else inbound_config.get("session_placement")
+            ),
+            session_key=xs.session_key if xs and xs.session_key is not None else inbound_config.get("session_key"),
+            seq_placement=(
+                xs.seq_placement if xs and xs.seq_placement is not None else inbound_config.get("seq_placement")
+            ),
+            seq_key=xs.seq_key if xs and xs.seq_key is not None else inbound_config.get("seq_key"),
+            uplink_data_placement=(
+                xs.uplink_data_placement
+                if xs and xs.uplink_data_placement is not None
+                else inbound_config.get("uplink_data_placement")
+            ),
+            uplink_data_key=(
+                xs.uplink_data_key if xs and xs.uplink_data_key is not None else inbound_config.get("uplink_data_key")
+            ),
+            uplink_chunk_size=(
+                xs.uplink_chunk_size
+                if xs and xs.uplink_chunk_size is not None
+                else inbound_config.get("uplink_chunk_size")
+            ),
             xmux=xs.xmux.model_dump(by_alias=True, exclude_none=True) if xs and xs.xmux else None,
             download_settings=down_settings if xs and down_settings else None,
             http_headers=host.http_headers,
@@ -302,15 +342,6 @@ async def _prepare_subscription_inbound_data(
             random_user_agent=host.random_user_agent,
         )
 
-    # Compute flow_enabled: only for VLESS with specific conditions
-    header_type = getattr(transport_config, "header_type", "none")
-    flow_enabled = (
-        protocol == "vless"
-        and tls_value in ("tls", "reality")
-        and network in ("tcp", "raw", "kcp")
-        and header_type != "http"
-    )
-
     return SubscriptionInboundData(
         remark=host.remark,
         inbound_tag=host.inbound_tag,
@@ -327,7 +358,6 @@ async def _prepare_subscription_inbound_data(
         encryption=encryption,
         vless_route=host.vless_route,
         inbound_flow=inbound_flow,
-        flow_enabled=flow_enabled,
         random_user_agent=host.random_user_agent,
         use_sni_as_host=host.use_sni_as_host,
         fragment_settings=host.fragment_settings.model_dump() if host.fragment_settings else None,
@@ -349,7 +379,7 @@ class HostManager:
         self._hosts = {}
         self._lock = Lock()
         self._nats_enabled = is_nats_enabled()
-        self._multi_worker = ROLE.requires_nats
+        self._multi_worker = runtime_settings.role.requires_nats
         self._nc: nats.NATS | None = None
         self._js: JetStreamContext | None = None
         self._kv: KeyValue | None = None
@@ -393,7 +423,7 @@ class HostManager:
             # Deserialize state using JSON
             try:
                 cached_state = json.loads(value.decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError):
+            except json.JSONDecodeError, UnicodeDecodeError:
                 self._logger.warning("Failed to decode HostManager state as JSON, ignoring...")
                 return False
 
@@ -406,7 +436,7 @@ class HostManager:
                         converted_state[host_id] = SubscriptionInboundData.model_validate(host_data)
                     else:
                         converted_state[host_id] = host_data
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     self._logger.warning(f"Failed to convert host data for host ID {host_id_str}: {host_data}")
                     continue
 
@@ -596,7 +626,7 @@ host_manager: HostManager = HostManager()
 
 @on_startup
 async def initialize_hosts():
-    if ROLE == Role.NODE:
+    if runtime_settings.role == Role.NODE:
         return
     async with GetDB() as db:
         await host_manager.setup(db)
@@ -604,7 +634,7 @@ async def initialize_hosts():
 
 @on_shutdown
 async def shutdown_hosts():
-    if ROLE == Role.NODE:
+    if runtime_settings.role == Role.NODE:
         return
     # Close NATS connection
     if host_manager._nc:

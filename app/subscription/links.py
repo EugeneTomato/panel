@@ -14,7 +14,7 @@ from app.models.subscription import (
     WebSocketTransportConfig,
     XHTTPTransportConfig,
 )
-from config import EXTERNAL_CONFIG
+from config import subscription_env_settings
 
 from . import BaseSubscription
 
@@ -61,8 +61,8 @@ class StandardLinks(BaseSubscription):
         self.links.append(link)
 
     def render(self):
-        if EXTERNAL_CONFIG:
-            self.links.append(EXTERNAL_CONFIG)
+        if subscription_env_settings.external_config:
+            self.links.append(subscription_env_settings.external_config)
         return "\n".join((self.links))
 
     def add(self, remark: str, address: str, inbound: SubscriptionInboundData, settings: dict):
@@ -166,7 +166,8 @@ class StandardLinks(BaseSubscription):
 
     def _apply_finalmask(self, payload: dict, protocol: str, inbound: SubscriptionInboundData):
         """Apply finalMask for vmess if needed"""
-        payload["fm"] = json.dumps(inbound.finalmask)
+        if inbound.finalmask:
+            payload["fm"] = json.dumps(inbound.finalmask)
 
     def _transport_tcp(self, payload: dict, protocol: str, config: TCPTransportConfig, path: str):
         """Handle tcp/raw/http transport - only gets TCP config"""
@@ -262,13 +263,12 @@ class StandardLinks(BaseSubscription):
 
         payload = {
             "encryption": inbound.encryption,
-            "security": inbound.tls_config.tls,
+            "security": inbound.tls_config.tls if inbound.tls_config.tls else "none",
             "type": inbound.network,
             "headerType": getattr(inbound.transport_config, "header_type", "none"),
         }
 
-        # Only add flow if inbound supports it
-        if inbound.flow_enabled and (flow := settings.get("flow", "")):
+        if flow := inbound.inbound_flow:
             payload["flow"] = flow
 
         self._apply_transport_settings(payload, "vless", inbound, path)
@@ -287,7 +287,7 @@ class StandardLinks(BaseSubscription):
         path = self._process_path(inbound)
 
         payload = {
-            "security": inbound.tls_config.tls,
+            "security": inbound.tls_config.tls if inbound.tls_config.tls else "none",
             "type": inbound.network,
             "headerType": getattr(inbound.transport_config, "header_type", "none"),
         }

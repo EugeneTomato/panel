@@ -2,12 +2,13 @@ from fastapi import APIRouter, Depends, status
 
 from app.db import AsyncSession, get_db
 from app.models.admin import AdminDetails
-from app.models.host import BaseHost, CreateHost
+from app.models.host import BaseHost, BulkHostSelection, BulkHostsActionResponse, CreateHost, RemoveHostsResponse
 from app.operation import OperatorType
 from app.operation.host import HostOperation
 from app.utils import responses
 
 from .authentication import check_sudo_admin
+from .dependencies import get_host_list_query
 
 host_operator = HostOperation(operator_type=OperatorType.API)
 router = APIRouter(tags=["Host"], prefix="/api/host", responses={401: responses._401, 403: responses._403})
@@ -23,12 +24,14 @@ async def get_host(host_id: int, db: AsyncSession = Depends(get_db), _: AdminDet
 
 @router.get("s", response_model=list[BaseHost])
 async def get_hosts(
-    offset: int = 0, limit: int = 0, db: AsyncSession = Depends(get_db), _: AdminDetails = Depends(check_sudo_admin)
+    query=Depends(get_host_list_query),
+    db: AsyncSession = Depends(get_db),
+    _: AdminDetails = Depends(check_sudo_admin),
 ):
     """
     Get proxy hosts.
     """
-    return await host_operator.get_hosts(db=db, offset=offset, limit=limit)
+    return await host_operator.get_hosts(db=db, query=query)
 
 
 @router.post("/", response_model=BaseHost, status_code=status.HTTP_201_CREATED)
@@ -83,3 +86,45 @@ async def modify_hosts(
     Modify proxy hosts and update the configuration.
     """
     return await host_operator.modify_hosts(db=db, modified_hosts=modified_hosts, admin=admin)
+
+
+@router.post(
+    "s/bulk/delete",
+    response_model=RemoveHostsResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_delete_hosts(
+    bulk_hosts: BulkHostSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(check_sudo_admin),
+):
+    """Delete selected hosts by ID."""
+    return await host_operator.bulk_remove_hosts(db, bulk_hosts, admin)
+
+
+@router.post(
+    "s/bulk/disable",
+    response_model=BulkHostsActionResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_disable_hosts(
+    bulk_hosts: BulkHostSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(check_sudo_admin),
+):
+    """Disable selected hosts by ID."""
+    return await host_operator.bulk_set_hosts_disabled(db, bulk_hosts, admin, is_disabled=True)
+
+
+@router.post(
+    "s/bulk/enable",
+    response_model=BulkHostsActionResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_enable_hosts(
+    bulk_hosts: BulkHostSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(check_sudo_admin),
+):
+    """Enable selected hosts by ID."""
+    return await host_operator.bulk_set_hosts_disabled(db, bulk_hosts, admin, is_disabled=False)

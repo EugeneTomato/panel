@@ -1,6 +1,6 @@
 import { Language } from '@/components/common/language'
 import Snowfall from '@/components/common/snowfall'
-import { useTheme } from '@/components/common/theme-provider'
+import { useTheme } from '@/app/providers/theme-provider'
 import { ThemeToggle } from '@/components/common/theme-toggle'
 import { GithubStar } from '@/components/layout/github-star'
 import { GoalProgress } from '@/components/layout/goal-progress'
@@ -29,6 +29,7 @@ import {
   Database,
   FileCode2,
   FileUser,
+  Fingerprint,
   GithubIcon,
   Group,
   Layers,
@@ -170,6 +171,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                 title: 'settings.cores.title',
                 url: '/nodes/cores',
                 icon: Cpu,
+                matchPrefix: true,
               },
               {
                 title: 'nodes.logs.title',
@@ -253,6 +255,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                 icon: ListTodo,
               },
               {
+                title: 'settings.hwid.title',
+                url: '/settings/hwid',
+                icon: Fingerprint
+              },
+              {
                 title: 'settings.telegram.title',
                 url: '/settings/telegram',
                 icon: Send,
@@ -290,11 +297,6 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                 title: 'bulk.createUsers',
                 url: '/bulk',
                 icon: UserPlus,
-              },
-              {
-                title: 'bulk.wireguardPeerIps',
-                url: '/bulk/wireguard',
-                icon: Network,
               },
             ],
           },
@@ -431,11 +433,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                       <div className="flex min-w-0 flex-1 flex-col items-start overflow-hidden">
                         <span className={cn(isRTL ? 'text-right' : 'text-left', 'truncate text-sm font-semibold leading-tight')}>{t('pasarguard')}</span>
                         {isSudo && (
-                          <div className="flex min-w-0 items-center gap-1.5">
-                            <span className="shrink-0 text-xs opacity-45">{displayVersion}</span>
-                            <div className="min-w-0 flex-1">
+                          <div className="flex min-w-0 flex-wrap items-center gap-0.75 leading-none">
+                            <span className="max-w-full truncate text-xs leading-none opacity-45">{displayVersion}</span>
+                            <div className="max-w-full">
                               <TooltipProvider>
-                                <VersionBadge currentVersion={normalizedVersion} />
+                                <VersionBadge currentVersion={normalizedVersion} className="leading-none" />
                               </TooltipProvider>
                             </div>
                           </div>
@@ -477,14 +479,16 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                       alt="PasarGuard Logo"
                       className="h-8 w-8 flex-shrink-0 object-contain"
                     />
-                    <div className="flex flex-col overflow-hidden">
+                    <div className="flex min-w-0 flex-col overflow-hidden">
                       <span className={cn(isRTL ? 'text-right' : 'text-left', 'truncate text-sm font-semibold leading-tight')}>{t('pasarguard')}</span>
                       {isSudo && (
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs opacity-45">{displayVersion}</span>
-                          <TooltipProvider>
-                            <VersionBadge currentVersion={normalizedVersion} />
-                          </TooltipProvider>
+                        <div className="flex min-w-0 flex-wrap items-center gap-0.75 leading-none">
+                          <span className="max-w-full truncate text-xs leading-none opacity-45">{displayVersion}</span>
+                          <div className="max-w-full">
+                            <TooltipProvider>
+                              <VersionBadge currentVersion={normalizedVersion} className="leading-none" />
+                            </TooltipProvider>
+                          </div>
                         </div>
                       )}
                     </div>

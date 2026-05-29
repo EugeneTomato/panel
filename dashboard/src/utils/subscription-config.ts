@@ -1,7 +1,10 @@
-export type SubscriptionContentFormat = 'links' | 'links_base64' | 'wireguard'
+import { $fetch } from '@/service/http'
+
+export type SubscriptionContentFormat = 'links' | 'links_base64' | 'xray' | 'wireguard' | 'sing_box' | 'clash' | 'clash_meta' | 'outline'
 
 const WIREGUARD_PROTOCOL = 'wireguard://'
 const TEXT_FILE_MIME_TYPE = 'text/plain;charset=utf-8'
+const WIREGUARD_CONFIG_MIME_TYPE = 'application/octet-stream'
 
 const safeDecodeURIComponent = (value: string) => {
   try {
@@ -10,8 +13,6 @@ const safeDecodeURIComponent = (value: string) => {
     return value
   }
 }
-
-const normalizeSubscriptionPath = (value: string) => value.replace(/\/+$/, '')
 
 const formatCommaSeparatedValue = (value: string) =>
   value
@@ -39,9 +40,20 @@ const getWireGuardEndpointHost = (hostname: string) => {
   return hostname
 }
 
+const removeWireGuardUriParam = (value: string, param: string) => {
+  try {
+    const parsed = new URL(value)
+    parsed.searchParams.delete(param)
+    return parsed.toString()
+  } catch {
+    return value
+  }
+}
+
 type ParsedWireGuardUri = {
   address: string
   allowedIps: string
+  dns: string
   endpoint: string
   hostname: string
   mtu: string
@@ -70,6 +82,7 @@ const parseWireGuardUri = (value: string): ParsedWireGuardUri | null => {
     return {
       address: parsed.searchParams.get('address') || '',
       allowedIps: parsed.searchParams.get('allowedips') || '',
+      dns: parsed.searchParams.get('dns') || '',
       endpoint: port ? `${endpointHost}:${port}` : endpointHost,
       hostname,
       mtu: parsed.searchParams.get('mtu') || '',
@@ -79,7 +92,7 @@ const parseWireGuardUri = (value: string): ParsedWireGuardUri | null => {
       publicKey: parsed.searchParams.get('publickey') || '',
       remark: safeDecodeURIComponent(parsed.hash.replace(/^#/, '')),
       reserved: parsed.searchParams.get('reserved') || '',
-      source,
+      source: removeWireGuardUriParam(source, 'dns'),
       keepalive: parsed.searchParams.get('keepalive') || '',
     }
   } catch {
@@ -87,14 +100,25 @@ const parseWireGuardUri = (value: string): ParsedWireGuardUri | null => {
   }
 }
 
-export const resolveSubscriptionQrUrl = (subscribeUrl: string | null) => {
+export const resolveSubscriptionQrUrl = (subscribeUrl: string | null | undefined) => {
   if (!subscribeUrl) return ''
 
   const value = String(subscribeUrl)
   return value.startsWith('/') ? `${window.location.origin}${value}` : value
 }
 
-export const resolveSubscriptionFetchBaseUrl = (subscribeUrl: string | null) => {
+const normalizeSubscriptionPath = (url: string) => {
+  try {
+    const parsed = new URL(url)
+    return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}${parsed.search}${parsed.hash}`
+  } catch {
+    return url.replace(/\/+$/, '')
+  }
+}
+
+export const resolveSubscriptionPublicUrl = (subscribeUrl: string | null | undefined) => resolveSubscriptionQrUrl(subscribeUrl)
+
+export const resolveSubscriptionPanelBaseUrl = (subscribeUrl: string | null | undefined) => {
   if (!subscribeUrl) return ''
 
   const value = String(subscribeUrl)
@@ -111,12 +135,25 @@ export const resolveSubscriptionFetchBaseUrl = (subscribeUrl: string | null) => 
   }
 }
 
-export const fetchSubscriptionContent = async (subscribeUrl: string, format: SubscriptionContentFormat, timeoutMs = 8000) => {
+export const resolveSubscriptionFetchBaseUrl = (subscribeUrl: string | null | undefined) => {
+  return resolveSubscriptionPanelBaseUrl(subscribeUrl)
+}
+
+export const buildSubscriptionFormatUrl = (subscribeUrl: string | null | undefined, format: string) => {
+  const baseUrl = resolveSubscriptionPanelBaseUrl(subscribeUrl)
+  return baseUrl ? `${baseUrl}/${format}` : ''
+}
+
+const fetchSubscriptionResource = async <T>(url: string, parser: (response: Response) => Promise<T>, timeoutMs = 8000) => {
+  if (!url) {
+    throw new Error('Subscription URL is empty')
+  }
+
   const controller = new AbortController()
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
 
   try {
-    const response = await fetch(`${resolveSubscriptionFetchBaseUrl(subscribeUrl)}/${format}`, {
+    const response = await fetch(url, {
       signal: controller.signal,
     })
 
@@ -124,11 +161,24 @@ export const fetchSubscriptionContent = async (subscribeUrl: string, format: Sub
       throw new Error(`HTTP error! status: ${response.status}`)
     }
 
-    return response.text()
+    return parser(response)
   } finally {
     window.clearTimeout(timeoutId)
   }
 }
+
+export const fetchSubscriptionContentFromUrl = (url: string, timeoutMs = 8000) => fetchSubscriptionResource(url, response => response.text(), timeoutMs)
+
+export const fetchSubscriptionBlobFromUrl = (url: string, timeoutMs = 8000) => fetchSubscriptionResource(url, response => response.blob(), timeoutMs)
+
+export const fetchSubscriptionContent = (subscribeUrl: string, format: SubscriptionContentFormat, timeoutMs = 8000) =>
+  fetchSubscriptionContentFromUrl(buildSubscriptionFormatUrl(subscribeUrl, format), timeoutMs)
+
+export const fetchUserSubscriptionContent = (userId: number, format: SubscriptionContentFormat, timeoutMs = 8000) =>
+  $fetch<string, 'text'>(`/api/user/${userId}/subscription/${format}`, {
+    responseType: 'text',
+    timeout: timeoutMs,
+  })
 
 export const extractNameFromConfigUrl = (url: string): string | null => {
   const trimmedUrl = url.trim()
@@ -196,6 +246,10 @@ export const convertWireGuardUrlToConfig = (value: string) => {
   lines.push(`PrivateKey = ${parsed.privateKey}`)
   lines.push(`Address = ${formatCommaSeparatedValue(parsed.address)}`)
 
+  if (parsed.dns) {
+    lines.push(`DNS = ${formatCommaSeparatedValue(parsed.dns)}`)
+  }
+
   if (parsed.mtu) {
     lines.push(`MTU = ${parsed.mtu}`)
   }
@@ -258,6 +312,7 @@ export const getWireGuardDownloadPayload = (value: string) => {
   return {
     content,
     fileName: buildWireGuardDownloadFileName(value),
+    mimeType: WIREGUARD_CONFIG_MIME_TYPE,
   }
 }
 

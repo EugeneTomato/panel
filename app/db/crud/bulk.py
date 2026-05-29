@@ -4,6 +4,7 @@ from typing import Optional
 from sqlalchemy import and_, case, cast, delete, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.db.models import (
     Admin,
@@ -16,13 +17,18 @@ from app.db.models import (
     users_groups_association,
 )
 from app.models.group import BulkGroup
-from app.models.user import BulkUser, BulkUsersProxy, BulkWireGuardPeerIPs
+from app.models.user import BulkUser, BulkUserFilter, BulkUsersProxy
 
 from .general import get_datetime_add_expression
 from .user import load_user_attrs
 
 
-async def reset_all_users_data_usage(db: AsyncSession, admin: Optional[Admin] = None):
+async def reset_all_users_data_usage(
+    db: AsyncSession,
+    admin: Optional[Admin] = None,
+    *,
+    clean_chart_data: bool = False,
+):
     """
     Efficiently resets data usage for all users, or users under a specific admin if provided.
 
@@ -32,7 +38,8 @@ async def reset_all_users_data_usage(db: AsyncSession, admin: Optional[Admin] = 
     Operations performed:
         - Sets `used_traffic` to 0 for all target users.
         - Sets `status` to `active` for all users, unless filtered by admin.
-        - Deletes all related `UserUsageResetLogs`, `NodeUserUsage`, and `NextPlan` entries.
+        - Deletes all related `UserUsageResetLogs` and `NextPlan` entries.
+        - Deletes `NodeUserUsage` chart rows when `clean_chart_data` is enabled.
 
     Args:
         db (AsyncSession): The SQLAlchemy async session used for database operations.
@@ -53,7 +60,8 @@ async def reset_all_users_data_usage(db: AsyncSession, admin: Optional[Admin] = 
     await db.execute(update(User).where(User.id.in_(user_ids)).values(used_traffic=0, status=UserStatus.active))
 
     await db.execute(delete(UserUsageResetLogs).where(UserUsageResetLogs.user_id.in_(user_ids)))
-    await db.execute(delete(NodeUserUsage).where(NodeUserUsage.user_id.in_(user_ids)))
+    if clean_chart_data:
+        await db.execute(delete(NodeUserUsage).where(NodeUserUsage.user_id.in_(user_ids)))
     await db.execute(delete(NextPlan).where(NextPlan.user_id.in_(user_ids)))
 
     await db.commit()
@@ -255,16 +263,30 @@ async def count_bulk_group_scope(db: AsyncSession, bulk_model: BulkGroup) -> int
     return (await db.execute(select(func.count(User.id)).where(final_filter))).scalar_one_or_none() or 0
 
 
-def _create_final_filter(bulk_model: BulkUser | BulkUsersProxy | BulkWireGuardPeerIPs):
+async def get_bulk_wireguard_peer_ip_users(
+    db: AsyncSession,
+    bulk_model: BulkUserFilter,
+    admin_id: int | None = None,
+) -> list[User]:
+    final_filter = _create_final_filter(bulk_model)
+    if admin_id is not None:
+        final_filter = and_(final_filter, User.admin_id == admin_id)
+
+    result = await db.execute(
+        select(User).options(selectinload(User.groups).selectinload(Group.inbounds)).where(final_filter)
+    )
+    return list(result.unique().scalars().all())
+
+
+def _create_final_filter(bulk_model: BulkUserFilter):
     """Create a comprehensive SQLAlchemy filter condition from a bulk model."""
     other_conditions = []
-    if hasattr(bulk_model, "status") and bulk_model.status:
+    if bulk_model.status:
         other_conditions.append(User.status.in_([i.value for i in bulk_model.status]))
-        if UserStatus.expired in bulk_model.status:
-            if bulk_model.expired_after:
-                other_conditions.append(User.expire >= bulk_model.expired_after)
-            if bulk_model.expired_before:
-                other_conditions.append(User.expire <= bulk_model.expired_before)
+    if bulk_model.expire_after:
+        other_conditions.append(User.expire >= bulk_model.expire_after)
+    if bulk_model.expire_before:
+        other_conditions.append(User.expire <= bulk_model.expire_before)
     if bulk_model.admins:
         other_conditions.append(User.admin_id.in_([i for i in bulk_model.admins]))
     if bulk_model.group_ids:
@@ -414,13 +436,6 @@ async def update_users_proxy_settings(
     # Prepare the update statement
     if dialect == "postgresql":
         proxy_settings_expr = cast(User.proxy_settings, JSONB)
-        if bulk_model.flow is not None:
-            proxy_settings_expr = func.jsonb_set(
-                proxy_settings_expr,
-                text("'{vless,flow}'"),
-                cast(f"{bulk_model.flow.value}", JSONB),
-                True,
-            )
         if bulk_model.method is not None:
             proxy_settings_expr = func.jsonb_set(
                 proxy_settings_expr,
@@ -430,8 +445,6 @@ async def update_users_proxy_settings(
             )
     else:
         proxy_settings_expr = User.proxy_settings
-        if bulk_model.flow is not None:
-            proxy_settings_expr = func.json_set(proxy_settings_expr, "$.vless.flow", f"{bulk_model.flow.value}")
         if bulk_model.method is not None:
             proxy_settings_expr = func.json_set(
                 proxy_settings_expr, "$.shadowsocks.method", f"{bulk_model.method.value}"

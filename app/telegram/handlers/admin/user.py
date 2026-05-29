@@ -17,7 +17,16 @@ from aiogram.exceptions import TelegramBadRequest
 
 from app.db.models import UserStatus
 from app.models.settings import ConfigFormat
-from app.models.user import UserCreate, UserModify, UserStatusModify, CreateUserFromTemplate, ModifyUserByTemplate
+from app.models.group import GroupListQuery
+from app.models.user import (
+    CreateUserFromTemplate,
+    ModifyUserByTemplate,
+    UserCreate,
+    UserListQuery,
+    UserModify,
+    UserStatusModify,
+)
+from app.models.user_template import UserTemplateListQuery
 from app.models.validators import UserValidator
 from app.operation import OperatorType
 from app.operation.subscription import SubscriptionOperation
@@ -141,7 +150,7 @@ async def process_expire(event: Message, state: FSMContext, db: AsyncSession):
     else:
         await state.update_data(status=UserStatus.active.value)
         await state.set_state(forms.CreateUser.group_ids)
-        groups = await group_operations.get_all_groups(db)
+        groups = await group_operations.get_all_groups(db, GroupListQuery())
         return await event.answer(Texts.select_groups, reply_markup=GroupsSelector(groups).as_markup())
 
 
@@ -160,7 +169,7 @@ async def process_status(
         await add_to_messages_to_delete(state, msg)
     else:
         await state.set_state(forms.CreateUser.group_ids)
-        groups = await group_operations.get_all_groups(db)
+        groups = await group_operations.get_all_groups(db, GroupListQuery())
         await event.message.answer(Texts.select_groups, reply_markup=GroupsSelector(groups).as_markup())
 
 
@@ -179,7 +188,7 @@ async def process_on_hold_timeout(event: Message, state: FSMContext, db: AsyncSe
         return
 
     await state.update_data(on_hold_timeout=timeout)
-    groups = await group_operations.get_all_groups(db)
+    groups = await group_operations.get_all_groups(db, GroupListQuery())
 
     await add_to_messages_to_delete(state, event)
     await delete_messages(event, state)
@@ -201,7 +210,7 @@ async def select_groups(
         group_ids = [callback_data.group_id]
 
     await state.update_data(group_ids=group_ids)
-    all_groups = await group_operations.get_all_groups(db)
+    all_groups = await group_operations.get_all_groups(db, GroupListQuery())
 
     await event.message.edit_reply_markup(
         reply_markup=GroupsSelector(
@@ -251,7 +260,7 @@ async def modify_groups(
         return await event.answer(Texts.user_not_found)
 
     groups = await user_operations.validate_all_groups(db, user)
-    all_groups = await group_operations.get_all_groups(db)
+    all_groups = await group_operations.get_all_groups(db, GroupListQuery())
     await state.clear()
     await state.update_data(user_id=user.id, group_ids=[group.id for group in groups])
     await event.message.edit_text(
@@ -462,7 +471,7 @@ async def activate_next_plan(
 
 @router.callback_query(UserPanel.Callback.filter(UserPanelAction.modify_with_template == F.action))
 async def modify_with_template(event: CallbackQuery, db: AsyncSession, callback_data: UserPanel.Callback):
-    templates = await user_templates.get_user_templates(db)
+    templates = await user_templates.get_user_templates(db, UserTemplateListQuery())
     if not templates:
         return await event.answer(Texts.there_is_no_template)
 
@@ -488,7 +497,7 @@ async def modify_with_template_done(
 
 @router.callback_query(AdminPanel.Callback.filter(AdminPanelAction.create_user_from_template == F.action))
 async def create_user_from_template(event: CallbackQuery, db: AsyncSession):
-    templates = await user_templates.get_user_templates(db)
+    templates = await user_templates.get_user_templates(db, UserTemplateListQuery())
     if not templates:
         return await event.answer(Texts.there_is_no_template)
     await event.message.edit_text(Texts.choose_a_template, reply_markup=ChooseTemplate(templates).as_markup())
@@ -636,7 +645,11 @@ async def get_user(event: Message | CallbackQuery, admin: AdminDetails, db: Asyn
 
 @router.inline_query()
 async def search_user(event: InlineQuery, admin: AdminDetails, db: AsyncSession):
-    search = await user_operations.get_users(db, admin, search=event.query.strip(), limit=50)
+    search = await user_operations.get_users(
+        db,
+        admin,
+        UserListQuery(search=event.query.strip(), limit=50),
+    )
     result = [
         InlineQueryResultArticle(
             id=str(user.id),

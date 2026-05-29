@@ -2,13 +2,21 @@ from fastapi import APIRouter, Depends, status
 
 from app.db import AsyncSession, get_db
 from app.models.admin import AdminDetails
-from app.models.core import CoreCreate, CoreResponse, CoreResponseList, CoresSimpleResponse
+from app.models.core import (
+    BulkCoreSelection,
+    CoreCreate,
+    CoreResponse,
+    CoreResponseList,
+    CoresSimpleResponse,
+    RemoveCoresResponse,
+)
 from app.operation import OperatorType
 from app.operation.core import CoreOperation
 from app.operation.node import NodeOperation
 from app.utils import responses
 
 from .authentication import check_sudo_admin
+from .dependencies import get_core_list_query, get_core_simple_list_query
 
 core_operator = CoreOperation(operator_type=OperatorType.API)
 node_operator = NodeOperation(operator_type=OperatorType.API)
@@ -66,13 +74,12 @@ async def delete_core_config(
 
 @router.get("s", response_model=CoreResponseList)
 async def get_all_cores(
-    offset: int | None = None,
-    limit: int | None = None,
+    query=Depends(get_core_list_query),
     _: AdminDetails = Depends(check_sudo_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """Get a list of all core configurations."""
-    return await core_operator.get_all_cores(db, offset, limit)
+    return await core_operator.get_all_cores(db, query)
 
 
 @router.get(
@@ -82,23 +89,12 @@ async def get_all_cores(
     description="Returns only id and name for cores. Optimized for dropdowns and autocomplete.",
 )
 async def get_cores_simple(
-    offset: int | None = None,
-    limit: int | None = None,
-    search: str | None = None,
-    sort: str | None = None,
-    all: bool = False,
+    query=Depends(get_core_simple_list_query),
     _: AdminDetails = Depends(check_sudo_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """Get lightweight core list with only id and name"""
-    return await core_operator.get_cores_simple(
-        db=db,
-        offset=offset,
-        limit=limit,
-        search=search,
-        sort=sort,
-        all=all,
-    )
+    return await core_operator.get_cores_simple(db=db, query=query)
 
 
 @router.post("/{core_id}/restart", status_code=status.HTTP_204_NO_CONTENT)
@@ -109,3 +105,17 @@ async def restart_core(
 
     await node_operator.restart_all_node(db=db, core_id=core_id, admin=admin)
     return {}
+
+
+@router.post(
+    "s/bulk/delete",
+    response_model=RemoveCoresResponse,
+    responses={400: responses._400, 403: responses._403, 404: responses._404},
+)
+async def bulk_delete_cores(
+    bulk_cores: BulkCoreSelection,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminDetails = Depends(check_sudo_admin),
+):
+    """Delete selected cores by ID."""
+    return await core_operator.bulk_remove_cores(db, bulk_cores, admin)

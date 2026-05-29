@@ -80,6 +80,20 @@ class XMuxSettings(BaseModel):
     )
     h_keep_alive_period: int | None = Field(None, serialization_alias="hKeepAlivePeriod")
 
+    @field_validator(
+        "max_concurrency",
+        "max_connections",
+        "c_max_reuse_times",
+        "h_max_reusable_secs",
+        "h_max_request_times",
+        mode="before",
+    )
+    @classmethod
+    def normalize_numeric_or_range_fields(cls, value):
+        if isinstance(value, int):
+            return str(value)
+        return value
+
 
 class XHttpSettings(BaseModel):
     mode: XHttpModes | None = Field(default=None)
@@ -97,7 +111,7 @@ class XHttpSettings(BaseModel):
     seq_key: str | None = Field(default=None)
     uplink_data_placement: str | None = Field(default=None, pattern=r"^$|^(body|cookie|header)$")
     uplink_data_key: str | None = Field(default=None)
-    uplink_chunk_size: int | None = Field(default=None)
+    uplink_chunk_size: str | int | None = Field(default=None, pattern=r"^\d{1,16}(-\d{1,16})?$")
     sc_max_each_post_bytes: str | int | None = Field(default=None, pattern=r"^\d{1,16}(-\d{1,16})?$")
     sc_min_posts_interval_ms: str | int | None = Field(default=None, pattern=r"^\d{1,16}(-\d{1,16})?$")
     xmux: XMuxSettings | None = Field(default=None)
@@ -108,6 +122,19 @@ class XHttpSettings(BaseModel):
         if v == "":
             return None
         return v
+
+    @field_validator(
+        "x_padding_bytes",
+        "uplink_chunk_size",
+        "sc_max_each_post_bytes",
+        "sc_min_posts_interval_ms",
+        mode="before",
+    )
+    @classmethod
+    def normalize_numeric_or_range_fields(cls, value):
+        if isinstance(value, int):
+            return str(value)
+        return value
 
     @field_validator(
         "x_padding_key",
@@ -121,6 +148,7 @@ class XHttpSettings(BaseModel):
         "seq_key",
         "uplink_data_placement",
         "uplink_data_key",
+        "uplink_chunk_size",
         mode="before",
     )
     def _empty_str_to_none(cls, v):
@@ -340,3 +368,34 @@ class CreateHost(BaseHost):
     @field_validator("sni", "host", mode="after")
     def validate_sets(cls, v: set):
         return StringArrayValidator.len_check(v, 1000)
+
+
+class BulkHostSelection(BaseModel):
+    """Model for bulk host selection by IDs"""
+
+    ids: set[int] = Field(default_factory=set)
+
+    @field_validator("ids", mode="after")
+    @classmethod
+    def ids_validator(cls, v):
+        return ListValidator.not_null_list(list(v), "host")
+
+
+class RemoveHostsResponse(BaseModel):
+    """Response model for bulk host deletion"""
+
+    hosts: list[str]
+    count: int
+
+
+class BulkHostsActionResponse(BaseModel):
+    """Response model for bulk host actions."""
+
+    hosts: list[str]
+    count: int
+
+
+class HostListQuery(BaseModel):
+    ids: list[int] | None = None
+    offset: int = 0
+    limit: int = 0

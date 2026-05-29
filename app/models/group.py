@@ -1,3 +1,5 @@
+from enum import Enum
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .validators import ListValidator
@@ -54,9 +56,79 @@ class GroupsSimpleResponse(BaseModel):
     total: int
 
 
+class GroupSimpleSortField(str, Enum):
+    id = "id"
+    group_name = "name"
+
+
+class SortDirection(str, Enum):
+    asc = "asc"
+    desc = "desc"
+
+
+class GroupSimpleSortOption(str, Enum):
+    id = "id"
+    group_name = "name"
+    desc_id = "-id"
+    desc_group_name = "-name"
+
+    @property
+    def field(self) -> GroupSimpleSortField:
+        return GroupSimpleSortField(self.value.lstrip("-"))
+
+    @property
+    def direction(self) -> SortDirection:
+        return SortDirection.desc if self.value.startswith("-") else SortDirection.asc
+
+
+class GroupListQuery(BaseModel):
+    ids: list[int] | None = None
+    offset: int | None = None
+    limit: int | None = None
+
+
+class GroupSimpleListQuery(BaseModel):
+    ids: list[int] | None = None
+    offset: int | None = None
+    limit: int | None = None
+    search: str | None = None
+    sort: list[GroupSimpleSortOption] = Field(default_factory=list)
+    all: bool = False
+
+    @field_validator("sort", mode="before")
+    @classmethod
+    def validate_sort(cls, value):
+        return ListValidator.normalize_enum_list_input(value, GroupSimpleSortOption)
+
+
 class BulkGroup(BaseModel):
     group_ids: set[int]
     has_group_ids: set[int] = Field(default_factory=set)
     admins: set[int] = Field(default_factory=set)
     users: set[int] = Field(default_factory=set)
     dry_run: bool = False
+
+
+class BulkGroupSelection(BaseModel):
+    """Model for bulk group selection by IDs"""
+
+    ids: set[int] = Field(default_factory=set)
+
+    @field_validator("ids", mode="after")
+    @classmethod
+    def ids_validator(cls, v):
+        return ListValidator.not_null_list(list(v), "group")
+
+
+class RemoveGroupsResponse(BaseModel):
+    """Response model for bulk group deletion"""
+
+    groups: list[str]
+    count: int
+
+
+class BulkGroupsActionResponse(BaseModel):
+    """Response model for bulk group actions."""
+
+    groups: list[str]
+    count: int

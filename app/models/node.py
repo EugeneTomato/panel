@@ -1,4 +1,5 @@
 import re
+from datetime import datetime as dt
 from enum import Enum
 from ipaddress import ip_address
 from uuid import UUID
@@ -7,6 +8,10 @@ from cryptography.x509 import load_pem_x509_certificate
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
 from app.db.models import DataLimitResetStrategy, NodeConnectionType, NodeStatus
+from app.models.stats import Period
+from app.utils.helpers import fix_datetime_timezone
+
+from .validators import ListValidator, ProxyValidator
 
 # Basic PEM format validation
 CERT_PATTERN = r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----"
@@ -49,6 +54,7 @@ class Node(BaseModel):
     reset_time: int = Field(default=-1)
     default_timeout: int = Field(default=10, ge=3, le=60)
     internal_timeout: int = Field(default=15, ge=3, le=60)
+    proxy_url: str | None = Field(default=None, max_length=256)
 
 
 class NodeCreate(Node):
@@ -157,6 +163,11 @@ class NodeCreate(Node):
 
         return self
 
+    @field_validator("proxy_url")
+    @classmethod
+    def validate_proxy_url(cls, v):
+        return ProxyValidator.validate_proxy_url(v)
+
 
 class NodeModify(NodeCreate):
     name: str | None = Field(default=None)
@@ -235,6 +246,95 @@ class NodesSimpleResponse(BaseModel):
     total: int
 
 
+class NodeSimpleSortField(str, Enum):
+    id = "id"
+    node_name = "name"
+
+
+class SortDirection(str, Enum):
+    asc = "asc"
+    desc = "desc"
+
+
+class NodeSimpleSortOption(str, Enum):
+    id = "id"
+    node_name = "name"
+    desc_id = "-id"
+    desc_node_name = "-name"
+
+    @property
+    def field(self) -> NodeSimpleSortField:
+        return NodeSimpleSortField(self.value.lstrip("-"))
+
+    @property
+    def direction(self) -> SortDirection:
+        return SortDirection.desc if self.value.startswith("-") else SortDirection.asc
+
+
+class NodeListQuery(BaseModel):
+    core_id: int | None = None
+    offset: int | None = None
+    limit: int | None = None
+    ids: list[int] | None = None
+    status: NodeStatus | list[NodeStatus] | None = None
+    enabled: bool = False
+    search: str | None = None
+
+
+class NodeSimpleListQuery(BaseModel):
+    ids: list[int] | None = None
+    offset: int | None = None
+    limit: int | None = None
+    search: str | None = None
+    sort: list[NodeSimpleSortOption] = Field(default_factory=list)
+    all: bool = False
+
+    @field_validator("sort", mode="before")
+    @classmethod
+    def validate_sort(cls, value):
+        return ListValidator.normalize_enum_list_input(value, NodeSimpleSortOption)
+
+
+class NodeUsageQuery(BaseModel):
+    period: Period = Field(default=Period.hour)
+    node_id: int | None = None
+    group_by_node: bool = False
+    start: dt | None = Field(default=None, examples=["2024-01-01T00:00:00+03:30"])
+    end: dt | None = Field(default=None, examples=["2024-01-31T23:59:59+03:30"])
+
+    @field_validator("start", "end", mode="before")
+    @classmethod
+    def validate_datetimes(cls, value):
+        if not value:
+            return value
+        return fix_datetime_timezone(value)
+
+
+class NodeStatsPeriodQuery(BaseModel):
+    period: Period = Field(default=Period.hour)
+    start: dt | None = Field(default=None, examples=["2024-01-01T00:00:00+03:30"])
+    end: dt | None = Field(default=None, examples=["2024-01-31T23:59:59+03:30"])
+
+    @field_validator("start", "end", mode="before")
+    @classmethod
+    def validate_datetimes(cls, value):
+        if not value:
+            return value
+        return fix_datetime_timezone(value)
+
+
+class NodeClearUsageQuery(BaseModel):
+    start: dt | None = Field(default=None)
+    end: dt | None = Field(default=None)
+
+    @field_validator("start", "end", mode="before")
+    @classmethod
+    def validate_datetimes(cls, value):
+        if not value:
+            return value
+        return fix_datetime_timezone(value)
+
+
 class NodeNotification(BaseModel):
     """Lightweight node model for sending notifications without database fetch."""
 
@@ -270,3 +370,28 @@ class NodeCoreUpdate(BaseModel):
 
 class NodeGeoFilesUpdate(BaseModel):
     region: GeoFilseRegion = Field(default=GeoFilseRegion.iran, examples=["iran"])
+
+
+class BulkNodeSelection(BaseModel):
+    """Model for bulk node selection by IDs"""
+
+    ids: set[int] = Field(default_factory=set)
+
+    @field_validator("ids", mode="after")
+    @classmethod
+    def ids_validator(cls, v):
+        return ListValidator.not_null_list(list(v), "node")
+
+
+class RemoveNodesResponse(BaseModel):
+    """Response model for bulk node deletion"""
+
+    nodes: list[str]
+    count: int
+
+
+class BulkNodesActionResponse(BaseModel):
+    """Response model for bulk node actions."""
+
+    nodes: list[str]
+    count: int

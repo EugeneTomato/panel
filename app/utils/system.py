@@ -1,11 +1,9 @@
-import ipaddress
 import math
 import os
 import secrets
-import socket
+import time
 from dataclasses import dataclass
 
-import httpx
 import psutil
 
 
@@ -58,78 +56,15 @@ def disk_usage(path: str | None = None) -> DiskStat:
     return DiskStat(total=disk.total, used=disk.used, free=disk.free)
 
 
+def get_uptime() -> int:
+    pid = os.getpid()
+    process = psutil.Process(pid)
+    create_time = process.create_time()
+    return int(time.time() - create_time)
+
+
 def random_password() -> str:
     return secrets.token_urlsafe(24)
-
-
-def check_port(port: int) -> bool:
-    s = socket.socket()
-    try:
-        s.connect(("127.0.0.1", port))
-        return True
-    except socket.error:
-        return False
-    finally:
-        s.close()
-
-
-def get_public_ip():
-    try:
-        resp = httpx.get("http://api4.ipify.org/", timeout=5).text.strip()
-        if ipaddress.IPv4Address(resp).is_global:
-            return resp
-    except Exception:
-        pass
-
-    try:
-        resp = httpx.get("http://ipv4.icanhazip.com/", timeout=5).text.strip()
-        if ipaddress.IPv4Address(resp).is_global:
-            return resp
-    except Exception:
-        pass
-
-    # Disable IPv6 for this request
-    transport = httpx.HTTPTransport(local_address="0.0.0.0")
-    with httpx.Client(transport=transport) as client:
-        try:
-            resp = client.get("https://ifconfig.io/ip", timeout=5).text.strip()
-            if ipaddress.IPv4Address(resp).is_global:
-                return resp
-        except httpx.RequestError:
-            pass
-
-    sock = None
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.connect(("8.8.8.8", 80))
-        resp = sock.getsockname()[0]
-        if ipaddress.IPv4Address(resp).is_global:
-            return resp
-    except (socket.error, IndexError):
-        pass
-    finally:
-        if sock:
-            sock.close()
-
-    return "127.0.0.1"
-
-
-def get_public_ipv6():
-    try:
-        resp = httpx.get("http://api6.ipify.org/", timeout=5).text.strip()
-        if ipaddress.IPv6Address(resp).is_global:
-            return "[%s]" % resp
-    except Exception:
-        pass
-
-    try:
-        resp = httpx.get("http://ipv6.icanhazip.com/", timeout=5).text.strip()
-        if ipaddress.IPv6Address(resp).is_global:
-            return "[%s]" % resp
-    except Exception:
-        pass
-
-    return "[::1]"
 
 
 def readable_size(size_bytes):
