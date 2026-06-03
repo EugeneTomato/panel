@@ -93,6 +93,12 @@ class AdminDetails(AdminContactInfo):
     sub_template: str | None = None
     lifetime_used_traffic: int | None = None
     note: str | None = None
+    can_choose_group: bool = True
+    can_set_traffic_limit: bool = True
+    can_set_date_expire: bool = True
+    can_use_templates: bool = True
+    can_change_status: bool = True
+    can_change_temporary_status: bool = True
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -114,6 +120,12 @@ class AdminModify(BaseModel):
     support_url: str | None = None
     note: str | None = None
     notification_enable: UserNotificationEnable | None = None
+    can_choose_group: bool
+    can_set_traffic_limit: bool
+    can_set_date_expire: bool
+    can_use_templates: bool
+    can_change_status: bool
+    can_change_temporary_status: bool
 
     @field_validator("discord_webhook")
     @classmethod

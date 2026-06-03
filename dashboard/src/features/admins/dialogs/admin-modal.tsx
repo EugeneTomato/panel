@@ -54,10 +54,72 @@ export default function AdminModal({ isDialogOpen, onOpenChange, editingAdminId,
     onOpenChange(open)
   }
 
+  // Эффект для обработки изменения поля sudo_admin и полей прав администратора
+  const canChooseGroup = form.watch(`can_choose_group`)
+  const canSetTrafficLimit = form.watch(`can_set_traffic_limit`)
+  const canSetDateExpire = form.watch(`can_set_date_expire`)
+  const canUseTemplates = form.watch(`can_use_templates`)
+  const canChangeStatus = form.watch(`can_change_status`)
+  const canChangeTemporaryStatus = form.watch(`can_change_temporary_status`)
+  const isSudo = form.watch(`is_sudo`)
+
+  useEffect(() => {
+    if (isSudo) {
+    form.setValue('can_choose_group', true)
+    form.setValue('can_set_traffic_limit', true)
+    form.setValue('can_set_date_expire', true)
+    form.setValue('can_use_templates', true)
+    form.setValue('can_change_status', true)
+    form.setValue('can_change_temporary_status', true)
+    }
+  }, [isSudo])
+
+  useEffect(() => {
+  if (!canChooseGroup && isSudo) {
+    form.setValue('is_sudo', false)
+    }
+  }, [canChooseGroup])
+
+  useEffect(() => {
+  if (!canSetTrafficLimit && isSudo) {
+    form.setValue('is_sudo', false)
+    }
+  }, [canSetTrafficLimit])
+
+  useEffect(() => {
+  if (!canSetDateExpire && isSudo) {
+    form.setValue('is_sudo', false)
+    }
+  }, [canSetDateExpire])
+
+  useEffect(() => {
+  if (!canUseTemplates && isSudo) {
+    form.setValue('is_sudo', false)
+    }
+  }, [canUseTemplates])
+
+  useEffect(() => {
+  if (!canChangeStatus && isSudo) {
+    form.setValue('is_sudo', false)
+    }
+  }, [canChangeStatus])
+
+  useEffect(() => {
+  if (!canChangeTemporaryStatus && isSudo) {
+    form.setValue('is_sudo', false)
+    }
+  }, [canChangeTemporaryStatus])
+
   const onSubmit = async (values: AdminFormValuesInput) => {
     try {
       const editData = {
         is_sudo: values.is_sudo ?? false,
+        can_choose_group: values.can_choose_group ?? true,
+        can_set_traffic_limit: values.can_set_traffic_limit ?? true,
+        can_set_date_expire: values.can_set_date_expire ?? true,
+        can_use_templates: values.can_use_templates ?? true,
+        can_change_status: values.can_change_status ?? true,
+        can_change_temporary_status: values.can_change_temporary_status ?? true,
         password: values.password || undefined,
         is_disabled: values.is_disabled,
         discord_webhook: values.discord_webhook,
@@ -117,6 +179,12 @@ export default function AdminModal({ isDialogOpen, onOpenChange, editingAdminId,
         'profile_title',
         'note',
         'discord_id',
+        'can_choose_group',
+        'can_set_traffic_limit',
+        'can_set_date_expire',
+        'can_use_templates',
+        'can_change_status',
+        'can_change_temporary_status',
       ]
       handleError({ error, fields, form, contextKey: 'admins' })
     }
@@ -492,6 +560,127 @@ export default function AdminModal({ isDialogOpen, onOpenChange, editingAdminId,
                     </FormItem>
                   )}
                 />
+
+                <FormField
+                  control={form.control}
+                  name="can_choose_group"
+                  render={({ field }) => (
+                    <FormItem className="flex w-full cursor-pointer flex-row items-center justify-between rounded-lg border p-4" onClick={() => field.onChange(!field.value)}>
+                      <div className="space-y-0.5">
+                        <FormLabel className="text-base">{t('Выбор группы')}</FormLabel>
+                        <p className="text-sm text-muted-foreground">
+                          Разрешить администратору выбирать группу при создании/редактировании пользователей
+                        </p>
+                      </div>
+                      <FormControl>
+                        <div onClick={e => e.stopPropagation()}>
+                          <Switch checked={field.value} onCheckedChange={field.onChange} />
+                        </div>
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="can_set_traffic_limit"
+                  render={({ field }) => (
+                    <FormItem className="flex w-full cursor-pointer flex-row items-center justify-between rounded-lg border p-4" onClick={() => field.onChange(!field.value)}>
+                      <div className="space-y-0.5">
+                        <FormLabel className="text-base">{t('Выбор группы')}</FormLabel>
+                        <p className="text-sm text-muted-foreground">
+                          Разрешить администратору устанавливать лимит трафика при создании/редактировании пользователей
+                        </p>
+                      </div>
+                      <FormControl>
+                        <div onClick={e => e.stopPropagation()}>
+                          <Switch checked={field.value} onCheckedChange={field.onChange} />
+                        </div>
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="can_set_date_expire"
+                  render={({ field }) => (
+                    <FormItem className="flex w-full cursor-pointer flex-row items-center justify-between rounded-lg border p-4" onClick={() => field.onChange(!field.value)}>
+                      <div className="space-y-0.5">
+                        <FormLabel className="text-base">{t('Выбор группы')}</FormLabel>
+                        <p className="text-sm text-muted-foreground">
+                          Разрешить администратору устанавливать дату истечения срока VPN-сертификата
+                        </p>
+                      </div>
+                      <FormControl>
+                        <div onClick={e => e.stopPropagation()}>
+                          <Switch checked={field.value} onCheckedChange={field.onChange} />
+                        </div>
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="can_use_templates"
+                  render={({ field }) => (
+                    <FormItem className="flex w-full cursor-pointer flex-row items-center justify-between rounded-lg border p-4" onClick={() => field.onChange(!field.value)}>
+                      <div className="space-y-0.5">
+                        <FormLabel className="text-base">{t('Выбор группы')}</FormLabel>
+                        <p className="text-sm text-muted-foreground">
+                          Разрешить администратору использовать шаблоны
+                        </p>
+                      </div>
+                      <FormControl>
+                        <div onClick={e => e.stopPropagation()}>
+                          <Switch checked={field.value} onCheckedChange={field.onChange} />
+                        </div>
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="can_change_status"
+                  render={({ field }) => (
+                    <FormItem className="flex w-full cursor-pointer flex-row items-center justify-between rounded-lg border p-4" onClick={() => field.onChange(!field.value)}>
+                      <div className="space-y-0.5">
+                        <FormLabel className="text-base">{t('Выбор группы')}</FormLabel>
+                        <p className="text-sm text-muted-foreground">
+                          Разрешить администратору изменять статус пользователя
+                        </p>
+                      </div>
+                      <FormControl>
+                        <div onClick={e => e.stopPropagation()}>
+                          <Switch checked={field.value} onCheckedChange={field.onChange} />
+                        </div>
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="can_change_temporary_status"
+                  render={({ field }) => (
+                    <FormItem className="flex w-full cursor-pointer flex-row items-center justify-between rounded-lg border p-4" onClick={() => field.onChange(!field.value)}>
+                      <div className="space-y-0.5">
+                        <FormLabel className="text-base">{t('Выбор группы')}</FormLabel>
+                        <p className="text-sm text-muted-foreground">
+                          Разрешить администратору редактировать поле временного отзыва VPN-сертификата
+                        </p>
+                      </div>
+                      <FormControl>
+                        <div onClick={e => e.stopPropagation()}>
+                          <Switch checked={field.value} onCheckedChange={field.onChange} />
+                        </div>
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+
               </div>
             </div>
             <div className="flex justify-end gap-2">

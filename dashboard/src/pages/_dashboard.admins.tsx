@@ -102,6 +102,12 @@ export default function AdminsPage() {
           sub_domain: admin.sub_domain,
           note: admin.note,
           discord_id: admin.discord_id,
+          can_choose_group: admin.can_choose_group,
+          can_set_traffic_limit: admin.can_set_traffic_limit,
+          can_set_date_expire: admin.can_set_date_expire,
+          can_use_templates: admin.can_use_templates,
+          can_change_status: admin.can_change_status,
+          can_change_temporary_status: admin.can_change_temporary_status,
         },
       })
       upsertAdminInAdminsCache(queryClient, updatedAdmin, { allowInsert: true })
@@ -141,6 +147,12 @@ export default function AdminsPage() {
       note: admin.note || '',
       discord_id: admin.discord_id || undefined,
       password: undefined,
+      can_choose_group: admin.can_choose_group ?? true,
+      can_set_traffic_limit: admin.can_set_traffic_limit ?? true,
+      can_set_date_expire: admin.can_set_date_expire ?? true,
+      can_use_templates: admin.can_use_templates ?? true,
+      can_change_status: admin.can_change_status ?? true,
+      can_change_temporary_status: admin.can_change_temporary_status ?? true,
       notification_enable: admin.notification_enable || {
         create: false,
         modify: false,

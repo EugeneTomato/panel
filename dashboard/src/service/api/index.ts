@@ -2829,6 +2829,12 @@ export interface AdminModify {
   support_url?: AdminModifySupportUrl
   note?: AdminModifyNote
   notification_enable?: AdminModifyNotificationEnable
+  can_choose_group: boolean
+  can_set_traffic_limit: boolean
+  can_set_date_expire: boolean
+  can_use_templates: boolean
+  can_change_status: boolean
+  can_change_temporary_status: boolean
 }
 
 export type AdminDetailsNote = string | null
@@ -2873,6 +2879,12 @@ export interface AdminDetails {
   sub_template?: AdminDetailsSubTemplate
   lifetime_used_traffic?: AdminDetailsLifetimeUsedTraffic
   note?: AdminDetailsNote
+  can_choose_group?: boolean
+  can_set_traffic_limit?: boolean
+  can_set_date_expire?: boolean
+  can_use_templates?: boolean
+  can_change_status?: boolean
+  can_change_temporary_status?: boolean
 }
 
 export type AdminCreateNotificationEnable = UserNotificationEnable | null
@@ -2912,6 +2924,12 @@ export interface AdminCreate {
   note?: AdminCreateNote
   notification_enable?: AdminCreateNotificationEnable
   username: string
+  can_choose_group: boolean
+  can_set_traffic_limit: boolean
+  can_set_date_expire: boolean
+  can_use_templates: boolean
+  can_change_status: boolean
+  can_change_temporary_status: boolean
 }
 
 export type AdminContactInfoNotificationEnable = UserNotificationEnable | null

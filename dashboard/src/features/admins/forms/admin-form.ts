@@ -58,6 +58,12 @@ export const adminFormSchema = z
     profile_title: z.string().optional(),
     note: z.string().optional(),
     discord_id: z.number().optional(),
+    can_choose_group: z.boolean().default(true),
+    can_set_traffic_limit: z.boolean().default(true),
+    can_set_date_expire: z.boolean().default(true),
+    can_use_templates: z.boolean().default(true),
+    can_change_status: z.boolean().default(true),
+    can_change_temporary_status: z.boolean().default(true),
     notification_enable: z
       .object({
         create: z.boolean().optional(),
@@ -121,6 +127,12 @@ export const adminFormDefaultValues: Partial<AdminFormValuesInput> = {
   profile_title: '',
   note: '',
   discord_id: undefined,
+  can_choose_group: true,
+  can_set_traffic_limit: true,
+  can_set_date_expire: true,
+  can_use_templates: true,
+  can_change_status: true,
+  can_change_temporary_status: true,
   notification_enable: {
     create: true,
     modify: true,

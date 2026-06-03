@@ -136,6 +136,19 @@ async def update_admin(db: AsyncSession, db_admin: Admin, modified_admin: AdminM
         db_admin.note = modified_admin.note
     if modified_admin.notification_enable is not None:
         db_admin.notification_enable = modified_admin.notification_enable.model_dump()
+    if modified_admin.can_choose_group is not None:
+        db_admin.can_choose_group = modified_admin.can_choose_group
+    if modified_admin.can_set_traffic_limit is not None:
+        db_admin.can_set_traffic_limit = modified_admin.can_set_traffic_limit
+    if modified_admin.can_set_date_expire is not None:
+        db_admin.can_set_date_expire = modified_admin.can_set_date_expire
+    if modified_admin.can_use_templates is not None:
+        db_admin.can_use_templates = modified_admin.can_use_templates
+    if modified_admin.can_change_status is not None:
+        db_admin.can_change_status = modified_admin.can_change_status
+    if modified_admin.can_change_temporary_status is not None:
+        db_admin.can_change_temporary_status = modified_admin.can_change_temporary_status
+            
 
     await db.commit()
     await load_admin_attrs(db_admin)

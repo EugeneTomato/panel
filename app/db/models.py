@@ -87,6 +87,12 @@ class Admin(Base):
     support_url: Mapped[Optional[str]] = mapped_column(String(1024), default=None)
     notification_enable: Mapped[Optional[Dict]] = mapped_column(PostgresJSONB, default=None)
     note: Mapped[Optional[str]] = mapped_column(String(500), default=None)
+    can_choose_group: Mapped[bool] = mapped_column(default=True) # Выбор группы при созданни/редактировании пользователя
+    can_set_traffic_limit: Mapped[bool] = mapped_column(default=True) # Установление лимита трафика при создании/редактировании пользователя
+    can_set_date_expire: Mapped[bool] = mapped_column(default=True) # Установление даты истечения срока окончания подписки
+    can_use_templates: Mapped[bool] = mapped_column(default=True) # Возможность исопльзовать шаблоны для создание/редактирования пользователей
+    can_change_status: Mapped[bool] = mapped_column(default=True) # Возможность изменения статуса пользователя
+    can_change_temporary_status: Mapped[bool] = mapped_column(default=True) # Возможность изменения временного блокирования пользователя
 
     @hybrid_property
     def reseted_usage(self) -> int:
