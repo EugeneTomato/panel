@@ -47,11 +47,11 @@ def _build_admin_details(
         discord_id=db_admin.discord_id,
         sub_template=db_admin.sub_template,
         lifetime_used_traffic=None if reseted_usage is None else int(reseted_usage or 0) + used_traffic,
-        can_choose_group=db_admin.can_choose_group
-        can_set_traffic_limit=db_admin.can_set_traffic_limit
-        can_set_date_expire=db_admin.can_set_date_expire
-        can_chooscan_use_templatese_group=db_admin.can_use_templates
-        can_change_status=db_admin.can_change_status
+        can_choose_group=db_admin.can_choose_group,
+        can_set_traffic_limit=db_admin.can_set_traffic_limit,
+        can_set_date_expire=db_admin.can_set_date_expire,
+        can_chooscan_use_templatese_group=db_admin.can_use_templates,
+        can_change_status=db_admin.can_change_status,
         can_change_temporary_status=db_admin.can_change_temporary_status
     )
 
