@@ -334,6 +334,12 @@ class AdminCreateModale(BaseModal):
             profile_title = self.query_one("#profile_title").value.strip() or None
             support_url = self.query_one("#support_url").value.strip() or None
             note = self.query_one("#note", TextArea).text.strip() or None
+            can_choose_group = self.query_one("#is_sudo").value
+            can_set_traffic_limit = self.query_one("#is_sudo").value
+            can_set_date_expire = self.query_one("#is_sudo").value
+            can_use_templates = self.query_one("#is_sudo").value
+            can_change_status = self.query_one("#is_sudo").value
+            can_change_temporary_status = self.query_one("#is_sudo").value
 
             # Build notification_enable object (always create, never None for new admins)
             notification_enable = UserNotificationEnable(
@@ -365,6 +371,12 @@ class AdminCreateModale(BaseModal):
                         support_url=support_url,
                         note=note,
                         notification_enable=notification_enable,
+                        can_choose_group=is_sudo,
+                        can_set_traffic_limit=is_sudo,
+                        can_set_date_expire=is_sudo,
+                        can_use_templates=is_sudo,
+                        can_change_status=is_sudo,
+                        can_change_temporary_status=is_sudo
                     ),
                     SYSTEM_ADMIN,
                 )
@@ -580,6 +592,12 @@ class AdminModifyModale(BaseModal):
             profile_title = self.query_one("#profile_title").value.strip() or None
             support_url = self.query_one("#support_url").value.strip() or None
             note = self.query_one("#note", TextArea).text.strip() or None
+            can_choose_group = self.query_one("#is_sudo").value
+            can_set_traffic_limit = self.query_one("#is_sudo").value
+            can_set_date_expire = self.query_one("#is_sudo").value
+            can_use_templates = self.query_one("#is_sudo").value
+            can_change_status = self.query_one("#is_sudo").value
+            can_change_temporary_status = self.query_one("#is_sudo").value
 
             # Build notification_enable object (keep None for legacy admins, otherwise build)
             if self.admin.notification_enable is None:
@@ -615,6 +633,12 @@ class AdminModifyModale(BaseModal):
                         support_url=support_url,
                         note=note,
                         notification_enable=notification_enable,
+                        can_choose_group=is_sudo,
+                        can_set_traffic_limit=is_sudo,
+                        can_set_date_expire=is_sudo,
+                        can_use_templates=is_sudo,
+                        can_change_status=is_sudo,
+                        can_change_temporary_status=is_sudo
                     ),
                     SYSTEM_ADMIN,
                 )
