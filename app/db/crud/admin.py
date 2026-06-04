@@ -369,6 +369,12 @@ async def get_admins(
                     discord_id=admin.discord_id,
                     sub_template=admin.sub_template,
                     lifetime_used_traffic=lifetime_used_traffic,
+                    can_choose_group=admin.can_choose_group,
+                    can_set_traffic_limit=admin.can_set_traffic_limit,
+                    can_set_date_expire=admin.can_set_date_expire,
+                    can_use_templates=admin.can_use_templates,
+                    can_change_status=admin.can_change_status,
+                    can_change_temporary_status=admin.can_change_temporary_status,
                 )
             )
     else:
