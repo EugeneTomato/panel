@@ -587,7 +587,7 @@ export default function AdminModal({ isDialogOpen, onOpenChange, editingAdminId,
                   render={({ field }) => (
                     <FormItem className="flex w-full cursor-pointer flex-row items-center justify-between rounded-lg border p-4" onClick={() => field.onChange(!field.value)}>
                       <div className="space-y-0.5">
-                        <FormLabel className="text-base">{t('Выбор группы')}</FormLabel>
+                        <FormLabel className="text-base">{t('Установление лимита трафика')}</FormLabel>
                         <p className="text-sm text-muted-foreground">
                           Разрешить администратору устанавливать лимит трафика при создании/редактировании пользователей
                         </p>
@@ -607,7 +607,7 @@ export default function AdminModal({ isDialogOpen, onOpenChange, editingAdminId,
                   render={({ field }) => (
                     <FormItem className="flex w-full cursor-pointer flex-row items-center justify-between rounded-lg border p-4" onClick={() => field.onChange(!field.value)}>
                       <div className="space-y-0.5">
-                        <FormLabel className="text-base">{t('Выбор группы')}</FormLabel>
+                        <FormLabel className="text-base">{t('Дата истечения срока VPN-сертификата')}</FormLabel>
                         <p className="text-sm text-muted-foreground">
                           Разрешить администратору устанавливать дату истечения срока VPN-сертификата
                         </p>
@@ -627,7 +627,7 @@ export default function AdminModal({ isDialogOpen, onOpenChange, editingAdminId,
                   render={({ field }) => (
                     <FormItem className="flex w-full cursor-pointer flex-row items-center justify-between rounded-lg border p-4" onClick={() => field.onChange(!field.value)}>
                       <div className="space-y-0.5">
-                        <FormLabel className="text-base">{t('Выбор группы')}</FormLabel>
+                        <FormLabel className="text-base">{t('Шаблоны')}</FormLabel>
                         <p className="text-sm text-muted-foreground">
                           Разрешить администратору использовать шаблоны
                         </p>
@@ -647,7 +647,7 @@ export default function AdminModal({ isDialogOpen, onOpenChange, editingAdminId,
                   render={({ field }) => (
                     <FormItem className="flex w-full cursor-pointer flex-row items-center justify-between rounded-lg border p-4" onClick={() => field.onChange(!field.value)}>
                       <div className="space-y-0.5">
-                        <FormLabel className="text-base">{t('Выбор группы')}</FormLabel>
+                        <FormLabel className="text-base">{t('Статус пользователей')}</FormLabel>
                         <p className="text-sm text-muted-foreground">
                           Разрешить администратору изменять статус пользователя
                         </p>
@@ -667,7 +667,7 @@ export default function AdminModal({ isDialogOpen, onOpenChange, editingAdminId,
                   render={({ field }) => (
                     <FormItem className="flex w-full cursor-pointer flex-row items-center justify-between rounded-lg border p-4" onClick={() => field.onChange(!field.value)}>
                       <div className="space-y-0.5">
-                        <FormLabel className="text-base">{t('Выбор группы')}</FormLabel>
+                        <FormLabel className="text-base">{t('Временный отзыв VPN-сертификата')}</FormLabel>
                         <p className="text-sm text-muted-foreground">
                           Разрешить администратору редактировать поле временного отзыва VPN-сертификата
                         </p>

@@ -305,6 +305,8 @@ function UserModal({ isDialogOpen, onOpenChange, form, editingUser, editingUserI
   const { t, i18n } = useTranslation()
   const { admin } = useAdmin()
   const isSudo = admin?.is_sudo ?? false
+  const canChooseGroup = admin?.can_choose_group ?? true
+  const canUseTemplate = admin?.can_use_templates ?? true
   const dir = useDirDetection()
   const handleError = useDynamicErrorHandler()
   const [loading, setLoading] = useState(false)
@@ -2238,7 +2240,7 @@ function UserModal({ isDialogOpen, onOpenChange, form, editingUser, editingUserI
                       ))}
                     </div>
                     <div className="py-2">
-                      {activeTab === 'templates' &&
+                      {activeTab === 'templates' && canUseTemplate &&
                         (templatesLoading ? (
                           <div>{t('Loading...', { defaultValue: 'Loading...' })}</div>
                         ) : (
@@ -2267,7 +2269,7 @@ function UserModal({ isDialogOpen, onOpenChange, form, editingUser, editingUserI
                             )}
                           </div>
                         ))}
-                      {activeTab === 'groups' && (
+                      {activeTab === 'groups' &&  canChooseGroup && (
                         <FormField
                           control={form.control}
                           name="group_ids"

@@ -50,7 +50,7 @@ def _build_admin_details(
         can_choose_group=db_admin.can_choose_group,
         can_set_traffic_limit=db_admin.can_set_traffic_limit,
         can_set_date_expire=db_admin.can_set_date_expire,
-        can_chooscan_use_templatese_group=db_admin.can_use_templates,
+        can_use_templates=db_admin.can_use_templates,
         can_change_status=db_admin.can_change_status,
         can_change_temporary_status=db_admin.can_change_temporary_status
     )
