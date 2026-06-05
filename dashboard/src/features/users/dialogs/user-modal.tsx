@@ -307,6 +307,9 @@ function UserModal({ isDialogOpen, onOpenChange, form, editingUser, editingUserI
   const isSudo = admin?.is_sudo ?? false
   const canChooseGroup = admin?.can_choose_group ?? true
   const canUseTemplate = admin?.can_use_templates ?? true
+  const canChangeStatus = admin?.can_change_status ?? true
+  const canSetTrafficLimit = admin?.can_set_traffic_limit ?? true
+  const canSetDateExpire = admin?.can_set_date_expire ?? true
   const dir = useDirDetection()
   const handleError = useDynamicErrorHandler()
   const [loading, setLoading] = useState(false)
@@ -1434,7 +1437,7 @@ function UserModal({ isDialogOpen, onOpenChange, form, editingUser, editingUserI
                             )
                           }}
                         />
-                        {activeTab === 'groups' && (
+                        {activeTab === 'groups' &&  canChangeStatus && (
                           <FormField
                             control={form.control}
                             name="status"
@@ -1523,7 +1526,7 @@ function UserModal({ isDialogOpen, onOpenChange, form, editingUser, editingUserI
                           !selectedTemplateId && dataLimitValue !== undefined && dataLimitValue !== null && Number(dataLimitValue) > 0
                         return (
                           <div className={cn('flex w-full flex-col gap-4 lg:flex-row lg:items-start')}>
-                            {!selectedTemplateId && (
+                            {!selectedTemplateId && canSetTrafficLimit && (
                               <FormField
                                 control={form.control}
                                 name="data_limit"
@@ -1628,7 +1631,7 @@ function UserModal({ isDialogOpen, onOpenChange, form, editingUser, editingUserI
                                     )
                                   }}
                                 />
-                              ) : (
+                              ) : ( canSetDateExpire &&
                                 <FormField
                                   control={form.control}
                                   name="expire"
