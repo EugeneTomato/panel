@@ -24,7 +24,8 @@ const BulkPage = () => {
   const { t } = useTranslation()
   const { admin } = useAdmin()
   const is_sudo = admin?.is_sudo || false
-  const tabs = is_sudo ? sudoTabs : nonSudoTabs
+  const can_use_templates = admin?.can_use_templates ?? true
+  const tabs = is_sudo ? sudoTabs : (can_use_templates ? nonSudoTabs : []);
   const navigate = useNavigate()
   const location = useLocation()
   const [activeTab, setActiveTab] = useState(tabs[0].id)
