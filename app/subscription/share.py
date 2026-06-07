@@ -130,6 +130,7 @@ def format_time_left(seconds_left: int) -> str:
 def setup_format_variables(user: UsersResponseWithInbounds) -> dict:
     user_status = user.status
     expire = user.expire
+    temporary_status = user.temporary_status
     on_hold_expire_duration = user.on_hold_expire_duration
     now = dt.now(timezone.utc)
 
@@ -157,6 +158,26 @@ def setup_format_variables(user: UsersResponseWithInbounds) -> dict:
             time_left = "∞"
             expire_date = "∞"
             jalali_expire_date = "∞"
+
+        if temporary_status is not None:
+            seconds_left = (temporary_status - now).total_seconds()
+            temporary_date_obj = temporary_status.date()
+            temporary_date = temporary_date_obj.strftime("%Y-%m-%d")
+            jalali_temporary_date = jd.fromgregorian(
+                year=temporary_date_obj.year, month=temporary_date_obj.month, day=temporary_date_obj.day
+            ).strftime("%Y-%m-%d")
+            if now < temporary_status:
+                days_left = (temporary_status - now).days + 1
+                time_left = format_time_left(seconds_left)
+            else:
+                days_left = "0"
+                time_left = "0"
+
+        else:
+            days_left = "∞"
+            time_left = "∞"
+            temporary_date = "∞"
+            jalali_temporary_date = "∞"
     else:
         if on_hold_expire_duration:
             days_left = timedelta(seconds=on_hold_expire_duration).days
@@ -195,6 +216,7 @@ def setup_format_variables(user: UsersResponseWithInbounds) -> dict:
             "DATA_LEFT": data_left,
             "DAYS_LEFT": days_left,
             "EXPIRE_DATE": expire_date,
+            "TEMPORARY_DATE": temporary_date,
             "JALALI_EXPIRE_DATE": jalali_expire_date,
             "TIME_LEFT": time_left,
             "STATUS_EMOJI": status_emoji,

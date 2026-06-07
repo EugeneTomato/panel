@@ -78,3 +78,16 @@ export const StatusBadge: FC<UserStatusProps> = ({ expiryDate = null, status: us
     </div>
   )
 }
+
+// export const TemporaryStatusBadge = () => {
+//   const { t } = useTranslation()
+  
+//   return (
+//     <div className="flex items-center gap-x-1 text-muted-foreground">
+//       <Clock className="h-3 w-3" />
+//       <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
+//         {t('status.disabled', { defaultValue: 'Временно заблокирован' })}
+//       </span>
+//     </div>
+//   )
+// }

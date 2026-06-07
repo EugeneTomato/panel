@@ -384,13 +384,6 @@ export type XrayMuxSettingsInputXudpConcurrency = number | null
 
 export type XrayMuxSettingsInputConcurrency = number | null
 
-export interface XrayMuxSettingsInput {
-  enabled?: boolean
-  concurrency?: XrayMuxSettingsInputConcurrency
-  xudp_concurrency?: XrayMuxSettingsInputXudpConcurrency
-  xudp_proxy_udp_443?: Xudp
-}
-
 export interface XrayFragmentSettings {
   /** @pattern ^(:?tlshello|[\d-]{1,16})$ */
   packets: string
@@ -408,6 +401,13 @@ export const Xudp = {
   allow: 'allow',
   skip: 'skip',
 } as const
+
+export interface XrayMuxSettingsInput {
+  enabled?: boolean
+  concurrency?: XrayMuxSettingsInputConcurrency
+  xudp_concurrency?: XrayMuxSettingsInputXudpConcurrency
+  xudp_proxy_udp_443?: Xudp
+}
 
 export type XMuxSettingsOutputHKeepAlivePeriod = number | null
 
@@ -587,11 +587,6 @@ export const XHttpModes = {
 
 export type XHttpSettingsInputMode = XHttpModes | null
 
-export interface WorkersHealth {
-  scheduler: WorkerHealth
-  node: WorkerHealth
-}
-
 export type WorkerHealthError = string | null
 
 export type WorkerHealthResponseTimeMs = number | null
@@ -600,6 +595,11 @@ export interface WorkerHealth {
   status: string
   response_time_ms?: WorkerHealthResponseTimeMs
   error?: WorkerHealthError
+}
+
+export interface WorkersHealth {
+  scheduler: WorkerHealth
+  node: WorkerHealth
 }
 
 export type WireGuardSettingsPublicKey = string | null
@@ -708,8 +708,6 @@ export const UsernameGenerationStrategy = {
   sequence: 'sequence',
 } as const
 
-export type UserUsageStatsListStats = { [key: string]: UserUsageStat[] }
-
 export type UserUsageStatsListPeriod = Period | null
 
 export interface UserUsageStatsList {
@@ -723,6 +721,8 @@ export interface UserUsageStat {
   total_traffic: number
   period_start: string
 }
+
+export type UserUsageStatsListStats = { [key: string]: UserUsageStat[] }
 
 export type UserTemplateSimpleName = string | null
 
@@ -964,11 +964,14 @@ export type UserResponseDataLimitResetStrategy = DataLimitResetStrategy | null
  */
 export type UserResponseDataLimit = number | null
 
+export type UserResponseTemporaryStatus = string | number | null
+
 export type UserResponseExpire = string | number | null
 
 export interface UserResponse {
   proxy_settings?: ProxyTable
   expire?: UserResponseExpire
+  temporary_status?: UserResponseTemporaryStatus
   /** data_limit can be 0 or greater */
   data_limit?: UserResponseDataLimit
   data_limit_reset_strategy?: UserResponseDataLimitResetStrategy
@@ -1024,6 +1027,8 @@ export type UserModifyDataLimitResetStrategy = DataLimitResetStrategy | null
  */
 export type UserModifyDataLimit = number | null
 
+export type UserModifyTemporaryStatus = string | number | null
+
 export type UserModifyExpire = string | number | null
 
 export type UserModifyProxySettings = ProxyTable | null
@@ -1031,6 +1036,7 @@ export type UserModifyProxySettings = ProxyTable | null
 export interface UserModify {
   proxy_settings?: UserModifyProxySettings
   expire?: UserModifyExpire
+  temporary_status?: UserModifyTemporaryStatus
   /** data_limit can be 0 or greater */
   data_limit?: UserModifyDataLimit
   data_limit_reset_strategy?: UserModifyDataLimitResetStrategy
@@ -1044,15 +1050,6 @@ export interface UserModify {
   status?: UserModifyStatus
 }
 
-export type UserIPListAllNodes = { [key: string]: UserIPList | null }
-
-/**
- * User IP lists for all nodes
- */
-export interface UserIPListAll {
-  nodes: UserIPListAllNodes
-}
-
 export type UserIPListIps = { [key: string]: number }
 
 /**
@@ -1060,6 +1057,15 @@ export type UserIPListIps = { [key: string]: number }
  */
 export interface UserIPList {
   ips: UserIPListIps
+}
+
+export type UserIPListAllNodes = { [key: string]: UserIPList | null }
+
+/**
+ * User IP lists for all nodes
+ */
+export interface UserIPListAll {
+  nodes: UserIPListAllNodes
 }
 
 export type UserHWIDResponseDeviceModel = string | null
@@ -1106,11 +1112,14 @@ export type UserCreateDataLimitResetStrategy = DataLimitResetStrategy | null
  */
 export type UserCreateDataLimit = number | null
 
+export type UserCreateTemporaryStatus = string | number | null
+
 export type UserCreateExpire = string | number | null
 
 export interface UserCreate {
   proxy_settings?: ProxyTable
   expire?: UserCreateExpire
+  temporary_status?: UserCreateTemporaryStatus
   /** data_limit can be 0 or greater */
   data_limit?: UserCreateDataLimit
   data_limit_reset_strategy?: UserCreateDataLimitResetStrategy
@@ -1297,11 +1306,14 @@ export type SubscriptionUserResponseDataLimitResetStrategy = DataLimitResetStrat
  */
 export type SubscriptionUserResponseDataLimit = number | null
 
+export type SubscriptionUserResponseTemporaryStatus = string | number | null
+
 export type SubscriptionUserResponseExpire = string | number | null
 
 export interface SubscriptionUserResponse {
   proxy_settings?: ProxyTable
   expire?: SubscriptionUserResponseExpire
+  temporary_status?: SubscriptionUserResponseTemporaryStatus
   /** data_limit can be 0 or greater */
   data_limit?: SubscriptionUserResponseDataLimit
   data_limit_reset_strategy?: SubscriptionUserResponseDataLimitResetStrategy
@@ -2923,13 +2935,13 @@ export interface AdminCreate {
   support_url?: AdminCreateSupportUrl
   note?: AdminCreateNote
   notification_enable?: AdminCreateNotificationEnable
-  username: string
   can_choose_group: boolean
   can_set_traffic_limit: boolean
   can_set_date_expire: boolean
   can_use_templates: boolean
   can_change_status: boolean
   can_change_temporary_status: boolean
+  username: string
 }
 
 export type AdminContactInfoNotificationEnable = UserNotificationEnable | null

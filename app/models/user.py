@@ -30,6 +30,7 @@ class NextPlanModel(BaseModel):
 class User(BaseModel):
     proxy_settings: ProxyTable = Field(default_factory=ProxyTable)
     expire: dt | int | None = Field(default=None)
+    temporary_status: dt | int | None = Field(default=None)
     data_limit: int | None = Field(ge=0, default=None, description="data_limit can be 0 or greater")
     data_limit_reset_strategy: DataLimitResetStrategy | None = Field(default=None)
     note: str | None = Field(max_length=500, default=None)
@@ -96,6 +97,13 @@ class UserModify(UserWithValidator):
     @classmethod
     def group_ids_validator(cls, v):
         return ListValidator.nullable_list(v, "group")
+
+    @field_validator("temporary_status", check_fields=False)
+    @classmethod
+    def validator_temporary(cls, value):
+        if not value:
+            return value
+        return fix_datetime_timezone(value)
 
 
 class UserNotificationResponse(User):

@@ -51,6 +51,7 @@ const userSharedSchemaShape = {
   data_limit: z.number().min(0),
   hwid_limit: z.number().min(0).nullable().optional(),
   expire: z.union([z.string(), z.number(), z.null()]).optional(),
+  temporary_status: z.union([z.string(), z.number(), z.null()]).optional(),
   note: z.string().optional(),
   proxy_settings: proxyTableInputSchema.optional(),
   data_limit_reset_strategy: userDataLimitResetStrategyEnum.optional(),
@@ -100,6 +101,7 @@ export const getDefaultUserForm = async () => {
     data_limit: 0,
     hwid_limit: undefined,
     expire: '',
+    temporary_status: '',
     note: '',
     group_ids: [],
     proxy_settings: {

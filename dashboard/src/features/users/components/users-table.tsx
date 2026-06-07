@@ -29,7 +29,7 @@ import {
   setUsersShowSelectionCheckbox,
 } from '@/utils/userPreferenceStorage'
 import { bytesToFormGigabytes, gbToBytes } from '@/utils/formatByte'
-import { normalizeDatePickerValueForEditForm } from '@/utils/userEditDateUtils'
+import { normalizeDatePickerValueForEditForm, normalizeExpireForEditForm } from '@/utils/userEditDateUtils'
 import { useQueryClient, useMutation } from '@tanstack/react-query'
 import { endOfDay, startOfDay } from 'date-fns'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -317,6 +317,7 @@ const UsersTable = memo(() => {
       data_limit: selectedUser?.data_limit ? bytesToFormGigabytes(Number(selectedUser.data_limit)) : undefined,
       hwid_limit: selectedUser?.hwid_limit ?? undefined,
       expire: normalizeDatePickerValueForEditForm(selectedUser?.expire),
+      temporary_status: normalizeExpireForEditForm(selectedUser?.temporary_status),
       note: selectedUser?.note || '',
       data_limit_reset_strategy: selectedUser?.data_limit_reset_strategy || undefined,
       group_ids: selectedUser?.group_ids || [],
@@ -342,6 +343,7 @@ const UsersTable = memo(() => {
         data_limit: selectedUser.data_limit ? bytesToFormGigabytes(Number(selectedUser.data_limit)) : 0,
         hwid_limit: selectedUser.hwid_limit ?? undefined,
         expire: normalizeDatePickerValueForEditForm(selectedUser.expire),
+        temporary_status: normalizeDatePickerValueForEditForm(selectedUser.temporary_status),
         note: selectedUser.note || '',
         data_limit_reset_strategy: selectedUser.data_limit_reset_strategy || undefined,
         group_ids: selectedUser.group_ids || [],

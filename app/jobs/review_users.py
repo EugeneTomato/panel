@@ -8,6 +8,7 @@ from app.db import GetDB
 from app.db.models import User, UserStatus, ReminderType
 from app.db.crud.user import (
     get_active_to_expire_users,
+    get_active_to_temporary_users,
     get_active_to_limited_users,
     get_days_left_reached_users,
     get_on_hold_to_active_users,
@@ -57,6 +58,14 @@ async def expire_users_job():
             updated_users = await update_users_status(db, expired_users, UserStatus.expired)
             for user in updated_users:
                 await change_status(db, user, UserStatus.expired)
+
+async def temporary_users_job():
+    async with GetDB() as db:
+        if temporary_users := await get_active_to_temporary_users(db):
+            updated_users = await update_users_status(db, temporary_users, UserStatus.active)
+            for user in updated_users:
+                user.temporary_status = None
+                await change_status(db, user, UserStatus.active)
 
 
 async def limit_users_job():
@@ -167,6 +176,16 @@ if runtime_settings.role.runs_scheduler:
         max_instances=1,
         start_date=now,
         id="expire_users",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        temporary_users_job,
+        "interval",
+        seconds=job_settings.review_users_interval,
+        coalesce=True,
+        max_instances=1,
+        start_date=now,
+        id="temporary_users",
         replace_existing=True,
     )
     scheduler.add_job(

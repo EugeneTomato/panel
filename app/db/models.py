@@ -183,6 +183,7 @@ class User(Base):
     _expire: Mapped[Optional[dt]] = mapped_column("expire", DateTime(timezone=True), default=None, init=False)
     admin_id: Mapped[Optional[int]] = fk_id_column("admins.id", default=None)
     sub_revoked_at: Mapped[Optional[dt]] = mapped_column(DateTime(timezone=True), default=None)
+    _temporary_status: Mapped[Optional[dt]] = mapped_column("temporary_status", DateTime(timezone=True), default=None, init=False)
     note: Mapped[Optional[str]] = mapped_column(String(500), default=None)
     online_at: Mapped[Optional[dt]] = mapped_column(DateTime(timezone=True), default=None)
     on_hold_expire_duration: Mapped[Optional[int]] = mapped_column(BigInteger, default=None)
@@ -191,6 +192,26 @@ class User(Base):
     hwid_limit: Mapped[Optional[int]] = mapped_column(BigInteger, default=None)
     edit_at: Mapped[Optional[dt]] = mapped_column(DateTime(timezone=True), default=None)
     last_status_change: Mapped[Optional[dt]] = mapped_column(DateTime(timezone=True), default=None)
+
+    @hybrid_property
+    def temporary_status(self) -> Optional[dt]:
+        if self._temporary_status and self._temporary_status.tzinfo is None:
+            return self._temporary_status.replace(tzinfo=tz.utc)
+        return self._temporary_status
+
+    @temporary_status.inplace.expression
+    def temporary_status(cls):
+        return cls._temporary_status
+
+    @temporary_status.setter
+    def temporary_status(self, value: Optional[dt]):
+        if value is None:
+            self._temporary_status = None
+            return
+        if value.tzinfo is None:
+            self._temporary_status = value.replace(tzinfo=tz.utc)
+            return
+        self._temporary_status = value.astimezone(tz.utc)
 
     @hybrid_property
     def expire(self) -> Optional[dt]:
@@ -266,6 +287,14 @@ class User(Base):
         return [group.name for group in self.groups]
 
     @hybrid_property
+    def is_temporary_status_exp(self) -> bool:
+        return self.temporary_status is not None and self.temporary_status <= dt.now(tz.utc)
+
+    @is_temporary_status_exp.expression
+    def is_temporary_status_exp(cls):
+        return and_(cls.temporary_status.isnot(None), cls.temporary_status <= func.current_timestamp())
+
+    @hybrid_property
     def is_expired(self) -> bool:
         return self.expire is not None and self.expire <= dt.now(tz.utc)
 
@@ -331,6 +360,17 @@ class User(Base):
     @days_left.expression
     def days_left(cls):
         return case((cls.expire.isnot(None), func.floor(DaysDiff())), else_=0)
+
+    @hybrid_property
+    def days_left_temporary(self) -> int:
+        if not self.temporary_status:
+            return 0
+        remaining_days = (self.temporary_status.replace(tzinfo=tz.utc) - dt.now(tz.utc)).days
+        return max(remaining_days, 0)
+
+    @days_left.expression
+    def days_left_temporary(cls):
+        return case((cls.temporary_status.isnot(None), func.floor(DaysDiff())), else_=0)
 
 
 class UserSubscriptionUpdate(Base):

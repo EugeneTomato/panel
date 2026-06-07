@@ -141,11 +141,15 @@ class UserValidator:
 
         on_hold_expire = values.data.get("on_hold_expire_duration") or values.data.get("expire_duration")
         expire = values.data.get("expire")
+        temporary_status = values.data.get("temporary_status")
         if status is not None and status == "on_hold":
             if on_hold_expire == 0 or on_hold_expire is None:
                 raise ValueError("User cannot be on hold without a valid on_hold_expire_duration.")
             if expire:
                 raise ValueError("User cannot be on hold with specified expire.")
+        if status is not None and status == "active":
+            if temporary_status:
+                raise ValueError(f"User cannot be active with specified temporary_status. temporary_status: {temporary_status}")
         return status
 
     @staticmethod

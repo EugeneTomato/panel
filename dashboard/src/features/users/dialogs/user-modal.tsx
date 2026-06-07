@@ -310,6 +310,7 @@ function UserModal({ isDialogOpen, onOpenChange, form, editingUser, editingUserI
   const canChangeStatus = admin?.can_change_status ?? true
   const canSetTrafficLimit = admin?.can_set_traffic_limit ?? true
   const canSetDateExpire = admin?.can_set_date_expire ?? true
+  const canChangeTemporaryStatus = admin?.can_change_temporary_status ?? true
   const dir = useDirDetection()
   const handleError = useDynamicErrorHandler()
   const [loading, setLoading] = useState(false)
@@ -323,6 +324,7 @@ function UserModal({ isDialogOpen, onOpenChange, form, editingUser, editingUserI
   const [nextPlanManuallyDisabled, setNextPlanManuallyDisabled] = useState(false)
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null)
   const [expireCalendarOpen, setExpireCalendarOpen] = useState(false)
+  const [temporaryCalendarOpen, setTemporaryCalenderOpen] = useState(false)
   const [onHoldCalendarOpen, setOnHoldCalendarOpen] = useState(false)
   const [isResetUsageDialogOpen, setResetUsageDialogOpen] = useState(false)
   const [isRevokeSubDialogOpen, setRevokeSubDialogOpen] = useState(false)
@@ -361,6 +363,7 @@ function UserModal({ isDialogOpen, onOpenChange, form, editingUser, editingUserI
     if (!isDialogOpen) {
       // Reset when dialog closes
       setExpireCalendarOpen(false)
+      setTemporaryCalenderOpen(false)
       setOnHoldCalendarOpen(false)
       setNextPlanEnabled(false)
       setNextPlanManuallyDisabled(false)
@@ -455,9 +458,11 @@ function UserModal({ isDialogOpen, onOpenChange, form, editingUser, editingUserI
 
   // Get the expire value from the form
   const expireValue = form.watch('expire')
+  const temporaryValue = form.watch('temporary_status')
   const onHoldValue = form.watch('on_hold_timeout')
 
   const displayDate = toDatePickerDisplayDate(expireValue)
+  const displayTemporaryDate = toDatePickerDisplayDate(temporaryValue)
   const onHoldDisplayDate = toDatePickerDisplayDate(onHoldValue)
 
   // Query client for data refetching
@@ -601,12 +606,17 @@ function UserModal({ isDialogOpen, onOpenChange, form, editingUser, editingUserI
 
     if (status === 'on_hold') {
       form.setValue('expire', undefined)
+      form.setValue('temporary_status', undefined)
       form.clearErrors('expire')
+      form.clearErrors('temporary_status')
     } else {
       if (previousStatus === 'on_hold') {
         form.setValue('expire', undefined)
+        form.setValue('temporary_status', undefined)
+        form.clearErrors('temporary_status')
         form.clearErrors('expire')
         setExpireCalendarOpen(false)
+        setTemporaryCalenderOpen(false)
       }
       form.setValue('on_hold_expire_duration', undefined)
       form.clearErrors('on_hold_expire_duration')
@@ -970,6 +980,7 @@ function UserModal({ isDialogOpen, onOpenChange, form, editingUser, editingUserI
                 : values.on_hold_expire_duration
               : undefined,
           expire: status === 'on_hold' ? undefined : normalizeDatePickerValueForSubmit(values.expire),
+          temporary_status: normalizeDatePickerValueForSubmit(values.temporary_status),
           on_hold_timeout: status === 'on_hold' ? normalizeDatePickerValueForSubmit(values.on_hold_timeout) : undefined,
           group_ids: Array.isArray(values.group_ids) ? values.group_ids : [],
           status: values.status,
@@ -1068,7 +1079,7 @@ function UserModal({ isDialogOpen, onOpenChange, form, editingUser, editingUserI
         setActiveTab('groups')
         setSelectedTemplateId(null)
       } catch (error: any) {
-        const fields = ['username', 'data_limit', 'hwid_limit', 'expire', 'note', 'data_limit_reset_strategy', 'on_hold_expire_duration', 'on_hold_timeout', 'group_ids']
+        const fields = ['username', 'data_limit', 'hwid_limit', 'expire', 'note', 'data_limit_reset_strategy', 'on_hold_expire_duration', 'on_hold_timeout', 'group_ids', 'temporary_status']
         handleError({ error, fields, form, contextKey: 'users' })
       } finally {
         setLoading(false)
@@ -1631,7 +1642,7 @@ function UserModal({ isDialogOpen, onOpenChange, form, editingUser, editingUserI
                                     )
                                   }}
                                 />
-                              ) : ( canSetDateExpire &&
+                              ) : (canSetDateExpire &&
                                 <FormField
                                   control={form.control}
                                   name="expire"
@@ -1652,6 +1663,27 @@ function UserModal({ isDialogOpen, onOpenChange, form, editingUser, editingUserI
                           </div>
                         )
                       })()}
+
+                      {canChangeTemporaryStatus && status == 'disabled' && (
+                        <FormField
+                        control={form.control}
+                        name="temporary_status"
+                        render={({ field }) => (
+                          <ExpiryDateField
+                            field={field}
+                            displayDate={displayTemporaryDate}
+                            calendarOpen={temporaryCalendarOpen}
+                            setCalendarOpen={setTemporaryCalenderOpen}
+                            handleFieldChange={handleFieldChange}
+                            label={t('userDialog.temporary_status', { defaultValue: 'Дата восстановления' })}
+                            fieldName="temporary_status"
+                          />
+                        )}
+                      />
+                      )}
+                      
+                      <div><p></p></div>
+                      
                       {!selectedTemplateId && (
                         <FormField
                           control={form.control}

@@ -529,6 +529,11 @@ async def get_active_to_expire_users(db: AsyncSession) -> list[User]:
 
     return list((await db.execute(stmt)).unique().scalars().all())
 
+async def get_active_to_temporary_users(db: AsyncSession) -> list[User]:
+    stmt = _build_user_select_stmt().where(User.status == UserStatus.disabled).where(User.is_temporary_status_exp)
+
+    return list((await db.execute(stmt)).unique().scalars().all())
+
 
 async def get_active_to_limited_users(db: AsyncSession) -> list[User]:
     stmt = _build_user_select_stmt().where(User.status == UserStatus.active).where(User.is_limited)
@@ -784,12 +789,13 @@ async def create_user(db: AsyncSession, new_user: UserCreate, groups: list[Group
         User: Created user object.
     """
     db_user = User(
-        **new_user.model_dump(exclude={"group_ids", "expire", "proxy_settings", "next_plan", "on_hold_timeout"})
+        **new_user.model_dump(exclude={"group_ids", "expire", "proxy_settings", "next_plan", "on_hold_timeout", "temporary_status"})
     )
     db_user.admin = admin
     db_user.groups = groups
     db_user.expire = new_user.expire or None
     db_user.on_hold_timeout = new_user.on_hold_timeout or None
+    db_user.temporary_status = None
 
     if new_user.hwid_limit is not None:
         db_user.hwid_limit = new_user.hwid_limit
@@ -819,12 +825,13 @@ async def create_users_bulk(
     db_users: list[User] = []
     for new_user in new_users:
         db_user = User(
-            **new_user.model_dump(exclude={"group_ids", "expire", "proxy_settings", "next_plan", "on_hold_timeout"})
+            **new_user.model_dump(exclude={"group_ids", "expire", "proxy_settings", "next_plan", "on_hold_timeout", "temporary_status"})
         )
         db_user.admin = admin
         db_user.groups = list(groups)
         db_user.expire = new_user.expire or None
         db_user.on_hold_timeout = new_user.on_hold_timeout or None
+        db_user.temporary_status = None
         db_user.hwid_limit = new_user.hwid_limit if new_user.hwid_limit is not None else None
         db_user.proxy_settings = new_user.proxy_settings.dict()
         db_users.append(db_user)
@@ -918,11 +925,23 @@ async def modify_user(
     if modify.group_ids:
         db_user.groups = groups or await get_groups_by_ids(db, modify.group_ids, load_users=False, load_inbounds=True)
 
+    if modify.temporary_status is not None and modify.temporary_status != 0:
+        db_user.temporary_status = modify.temporary_status
+        db_user.status = UserStatus.disabled
+        modify.status = UserStatus.disabled
+
+    elif modify.temporary_status == 0 or modify.temporary_status == None:
+        if db_user.temporary_status is not None and db_user.temporary_status != 0:
+            db_user.temporary_status = None
+            db_user.status = UserStatus.active
+            modify.status = UserStatus.active
+
     if modify.status is not None:
         db_user.status = modify.status
 
     if modify.status is UserStatus.on_hold:
         db_user.expire = None
+        db_user.temporary_status = None
         remove_expiration_reminder = True
 
     elif modify.expire == 0:
